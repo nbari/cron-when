@@ -3,12 +3,6 @@ name: Test
 
 on:
   workflow_call:
-  push:
-    branches:
-      - '*'
-  pull_request:
-    branches:
-      - '*'
 
 env:
   CARGO_TERM_COLOR: always

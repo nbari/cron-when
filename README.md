@@ -1,5 +1,13 @@
 # cron-when
 
+[![Test & Build](https://github.com/nbari/cron-when/workflows/Test%20%26%20Build/badge.svg)](https://github.com/nbari/cron-when/actions)
+[![codecov](https://codecov.io/gh/nbari/cron-when/branch/main/graph/badge.svg)](https://codecov.io/gh/nbari/cron-when)
+[![Crates.io](https://img.shields.io/crates/v/cron-when.svg)](https://crates.io/crates/cron-when)
+[![Downloads](https://img.shields.io/crates/d/cron-when.svg)](https://crates.io/crates/cron-when)
+[![Documentation](https://docs.rs/cron-when/badge.svg)](https://docs.rs/cron-when)
+[![License](https://img.shields.io/crates/l/cron-when.svg)](https://github.com/nbari/cron-when/blob/main/LICENSE)
+
+
 A CLI cron expression parser that shows the next execution time and duration until then.
 
 ## Features
@@ -168,15 +176,6 @@ Options:
   -V, --version       Print version
 ```
 
-## Dependencies
-
-This project uses the following libraries:
-
-- [cron-parser](https://github.com/nbari/cron-parser) - For parsing cron expressions
-- [compound_duration](https://github.com/nbari/compound_duration) - For formatting time durations
-- [clap](https://github.com/clap-rs/clap) - For CLI argument parsing
-- [chrono](https://github.com/chronotope/chrono) - For date and time handling
-
 ## Development
 
 ### Running tests
@@ -196,11 +195,3 @@ cargo build --release
 ```bash
 cargo run -- "*/5 * * * *"
 ```
-
-## License
-
-BSD-3-Clause
-
-## Author
-
-Nicolas Embriz <nbari@tequila.io>

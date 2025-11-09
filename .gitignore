@@ -6,7 +6,6 @@
 .cursor/
 .idea/
 .vscode/
-Cargo.lock
 
 # Built crate generates this at compile time
 built.rs
