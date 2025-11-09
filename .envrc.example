@@ -1,0 +1,16 @@
+# Example environment configuration for direnv
+# Copy this file to .envrc and run: direnv allow
+
+# Enable OpenTelemetry tracing (optional)
+# Uncomment to send traces to local Jaeger instance
+#export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+# For Honeycomb (requires API key)
+#export OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io:443
+#export OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=YOUR_API_KEY"
+
+# Custom service instance ID (auto-generated if not set)
+#export OTEL_SERVICE_INSTANCE_ID=my-dev-machine
+
+# Set log level (default: warn)
+#export RUST_LOG=debug

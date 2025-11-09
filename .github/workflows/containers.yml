@@ -1,0 +1,171 @@
+---
+name: Container Integration Tests
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  container-tests:
+    name: Container Integration Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install MUSL tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Build static MUSL binary
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Set up container with cron
+        run: |
+          # Start Alpine container with cron
+          docker run -d --name cron-test alpine:latest sh -c "while true; do sleep 3600; done"
+          
+          # Wait for container
+          sleep 2
+          
+          # Install cron
+          docker exec cron-test apk add --no-cache dcron
+          
+          # Create test crontab with various entries including range/step patterns
+          docker exec cron-test sh -c 'cat > /tmp/test.cron << EOF
+          # Backup every day at 2 AM
+          0 2 * * * /usr/local/bin/backup.sh
+          
+          # Clean logs every hour
+          0 * * * * /usr/local/bin/cleanup.sh
+          
+          # Environment variables
+          SHELL=/bin/sh
+          PATH=/usr/local/bin:/usr/bin:/bin
+          MAILTO=admin@example.com
+          
+          # Monitor every 5 minutes
+          */5 * * * * /usr/local/bin/monitor.sh
+          
+          # Weekly report on Monday at 9 AM
+          0 9 * * 1 /usr/local/bin/weekly-report.sh
+          
+          # Midday checks at 12, 15, and 18 (range with step)
+          0 12-18/3 * * * /usr/local/bin/midday-check.sh
+          EOF'
+          
+          # Load crontab
+          docker exec cron-test crontab /tmp/test.cron
+          
+          # Verify crontab is loaded
+          echo "📋 Current crontab:"
+          docker exec cron-test crontab -l
+
+      - name: Copy binary to container
+        run: docker cp target/x86_64-unknown-linux-musl/release/cron-when cron-test:/usr/local/bin/
+
+      - name: Test crontab parsing and validate output
+        run: |
+          echo "🧪 Testing crontab -l parsing..."
+          OUTPUT=$(docker exec cron-test /usr/local/bin/cron-when --crontab)
+          echo "$OUTPUT"
+          
+          # Validate that we got output
+          if [ -z "$OUTPUT" ]; then
+            echo "❌ ERROR: No output from cron-when"
+            exit 1
+          fi
+          
+          # Count the number of cron entries (should be 5 cron jobs)
+          CRON_COUNT=$(echo "$OUTPUT" | grep -c "Next:")
+          if [ "$CRON_COUNT" -ne 5 ]; then
+            echo "❌ ERROR: Expected 5 cron entries, found $CRON_COUNT"
+            exit 1
+          fi
+          
+          # Verify specific comments exist (default output shows comments, not cron expressions)
+          echo "$OUTPUT" | grep -q "Backup every day at 2 AM" || { echo "❌ Missing backup job comment"; exit 1; }
+          echo "$OUTPUT" | grep -q "Clean logs every hour" || { echo "❌ Missing cleanup job comment"; exit 1; }
+          echo "$OUTPUT" | grep -q "Monitor every 5 minutes" || { echo "❌ Missing monitor job comment"; exit 1; }
+          echo "$OUTPUT" | grep -q "Weekly report on Monday at 9 AM" || { echo "❌ Missing weekly job comment"; exit 1; }
+          echo "$OUTPUT" | grep -q "Midday checks at 12, 15, and 18" || { echo "❌ Missing midday check job comment"; exit 1; }
+          
+          # Verify environment variables are NOT in output
+          if echo "$OUTPUT" | grep -q "^SHELL=\|^PATH=\|^MAILTO="; then
+            echo "❌ ERROR: Environment variables should not appear in output"
+            exit 1
+          fi
+          
+          echo "✅ All crontab entries validated successfully!"
+
+      - name: Validate crontab output format
+        run: |
+          echo "🧪 Validating output format..."
+          OUTPUT=$(docker exec cron-test /usr/local/bin/cron-when --crontab)
+          
+          # Verify each entry has "Next:" and "Left:"
+          NEXT_COUNT=$(docker exec cron-test /usr/local/bin/cron-when --crontab | grep -c "Next:.*UTC")
+          LEFT_COUNT=$(docker exec cron-test /usr/local/bin/cron-when --crontab | grep -c "Left:")
+          
+          if [ "$NEXT_COUNT" -ne 5 ] || [ "$LEFT_COUNT" -ne 5 ]; then
+            echo "❌ ERROR: Expected 5 Next: and 5 Left: lines, found Next:$NEXT_COUNT Left:$LEFT_COUNT"
+            echo "Output was:"
+            echo "$OUTPUT"
+            exit 1
+          fi
+          
+          echo "✅ Output format validated!"
+
+      - name: Test individual cron expressions
+        run: |
+          echo "🧪 Testing individual expressions..."
+          
+          # Test */5 * * * * (every 5 minutes)
+          OUTPUT=$(docker exec cron-test /usr/local/bin/cron-when "*/5 * * * *")
+          echo "$OUTPUT" | grep -q "Next:" || { echo "❌ Failed: */5 * * * *"; exit 1; }
+          
+          # Test 0 2 * * * (daily at 2 AM)
+          OUTPUT=$(docker exec cron-test /usr/local/bin/cron-when "0 2 * * *")
+          echo "$OUTPUT" | grep -q "Next:" || { echo "❌ Failed: 0 2 * * *"; exit 1; }
+          
+          # Test 0 9 * * 1 (Monday at 9 AM)
+          OUTPUT=$(docker exec cron-test /usr/local/bin/cron-when "0 9 * * 1")
+          echo "$OUTPUT" | grep -q "Next:" || { echo "❌ Failed: 0 9 * * 1"; exit 1; }
+          
+          # Test 0 12-18/3 * * * (range with step: 12, 15, 18)
+          OUTPUT=$(docker exec cron-test /usr/local/bin/cron-when "0 12-18/3 * * *")
+          echo "$OUTPUT" | grep -q "Next:" || { echo "❌ Failed: 0 12-18/3 * * *"; exit 1; }
+          echo "  ✓ Range/step pattern (12:00, 15:00, 18:00) parsed correctly"
+          
+          echo "✅ Individual expression tests passed!"
+
+      - name: Test file parsing with validation
+        run: |
+          echo "🧪 Testing file parsing..."
+          docker exec cron-test sh -c "crontab -l > /tmp/exported.cron"
+          
+          OUTPUT=$(docker exec cron-test /usr/local/bin/cron-when -f /tmp/exported.cron)
+          echo "$OUTPUT"
+          
+          # Verify we got the same 5 entries
+          CRON_COUNT=$(echo "$OUTPUT" | grep -c "Next:")
+          if [ "$CRON_COUNT" -ne 5 ]; then
+            echo "❌ ERROR: File parsing returned $CRON_COUNT entries, expected 5"
+            exit 1
+          fi
+          
+          echo "✅ File parsing validated!"
+
+      - name: Cleanup
+        if: always()
+        run: docker stop cron-test || true
+
+

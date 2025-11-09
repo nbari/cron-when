@@ -1,9 +1,13 @@
 default: test
   @just --list
 
-# Test suite
-test: clippy fmt
-  @echo "🧪 Running tests..."
+# Test suite (includes unit tests + integration tests)
+test: clippy fmt unit-test integration-test
+  @echo "✅ All tests passed!"
+
+# Unit tests
+unit-test:
+  @echo "🧪 Running unit tests..."
   cargo test -- --nocapture
 
 # Run tests with coverage
@@ -242,6 +246,52 @@ example:
   @echo "📖 Running example with sample.crontab..."
   cargo run -- -f sample.crontab
 
+# Integration tests - test with real crontab in container
+integration-test: build-musl
+  @echo "🐳 Running integration tests..."
+  @if ! podman ps | grep -q cron-when-test; then \
+    echo "📦 Starting test container..."; \
+    podman run -d --rm --name cron-when-test alpine:latest sh -c "while true; do sleep 3600; done" > /dev/null 2>&1; \
+    sleep 2; \
+    echo "📝 Installing cron..."; \
+    podman exec cron-when-test apk add --no-cache dcron > /dev/null 2>&1; \
+    echo "✍️  Creating test crontab..."; \
+    podman exec cron-when-test sh -c 'echo "# Backup every day at 2 AM" > /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "0 2 * * * /usr/local/bin/backup.sh" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "# Clean logs every hour" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "0 * * * * /usr/local/bin/cleanup.sh" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "# Environment variables" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "SHELL=/bin/sh" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "PATH=/usr/local/bin:/usr/bin:/bin" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "MAILTO=admin@example.com" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "# Monitor every 5 minutes" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "*/5 * * * * /usr/local/bin/monitor.sh" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "# Weekly report on Monday at 9 AM" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "0 9 * * 1 /usr/local/bin/weekly-report.sh" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "# Midday checks at 12, 15, and 18 (range with step)" >> /tmp/test.cron'; \
+    podman exec cron-when-test sh -c 'echo "0 12-18/3 * * * /usr/local/bin/midday-check.sh" >> /tmp/test.cron'; \
+    podman exec cron-when-test crontab /tmp/test.cron; \
+    echo "✅ Container ready"; \
+  else \
+    echo "✅ Using existing container"; \
+  fi
+  @echo "📦 Copying binary to container..."
+  @podman cp target/x86_64-unknown-linux-musl/release/cron-when cron-when-test:/usr/local/bin/ 2>&1 | grep -v "Error: destination is a directory" || true
+  @echo "🧪 Testing and validating crontab -l parsing..."
+  @./scripts/validate-integration-test.sh
+  @echo "✅ Integration tests passed!"
+
+# Clean up test container
+clean-test:
+  @echo "🧹 Cleaning up test container..."
+  @podman stop cron-when-test 2>/dev/null || true
+  @echo "✅ Cleanup complete"
+
 jaeger:
   podman run --rm -d --name jaeger \
     -e COLLECTOR_OTLP_ENABLED=true \
@@ -251,4 +301,5 @@ jaeger:
     jaegertracing/all-in-one:latest
 
 stop-containers:
-  podman stop jaeger || true
+  @podman stop jaeger 2>/dev/null || true
+  @just clean-test

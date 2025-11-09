@@ -9,3 +9,4 @@
 
 # Built crate generates this at compile time
 built.rs
+.envrc

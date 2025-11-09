@@ -27,6 +27,7 @@ openssl = { version = "0.10", optional = true, features = ["vendored"] }
 opentelemetry = "0.31.0"
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "gzip-tonic", "tls", "tls-roots", "trace"] }
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
+tokio = { version = "1", features = ["rt", "macros"] }
 tonic = { version = "0.14.2", features = ["tls-native-roots"] }
 tracing = "0.1"
 tracing-futures = "0.2.5"

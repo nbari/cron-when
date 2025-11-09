@@ -8,25 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2025-11-09
 
 ### Added
-- Initial release
-- Parse individual cron expressions with standard 5-field format
-- Display next execution time in UTC
-- Show time remaining using human-readable duration format (e.g., "2d 3h 15m 30s")
-- Parse current user's crontab (`crontab -l`)
-- Read and parse crontab files with `-f, --file` option
-- Support for comments in crontab files
-- Verbose output mode with `-v, --verbose` flag
+- Parse cron expressions with standard 5-field format (`* * * * *`)
+- Display next execution time in UTC with human-readable duration
+- Parse current user's crontab (`--crontab` flag)
+- Read crontab files with `-f, --file` option
 - Show next N occurrences with `-n, --next` option
-- OpenTelemetry integration for observability
-- Comprehensive test suite with 23 tests
+- Support for comments and environment variables in crontab files
+- Verbose output with multiple levels: `-v` (INFO), `-vv` (DEBUG), `-vvv` (TRACE)
+- OpenTelemetry integration for distributed tracing (educational - see docs)
+- Modular CLI architecture (actions/commands/dispatch pattern)
+- Container integration tests with real crontab validation
+- Multi-platform builds (Linux, macOS, Windows) with static MUSL binaries
+- Comprehensive test suite (37 unit tests + container integration)
 - GitHub Actions CI/CD workflows
-- Multi-platform release builds (Linux, macOS, Windows)
-- RPM and DEB package generation
-- Benchmark suite for performance testing
-- Static MUSL builds for Linux
+- DEB/RPM package generation
 
-### Features
-- Support for standard cron syntax: `*`, `,`, `-`, `/`
-- Environment variable parsing in crontab files
-- Clean CLI interface with clap
-- Zero runtime dependencies in release builds
+### Documentation
+- Detailed architecture guide (`CLI_ARCHITECTURE.md`)
+- OpenTelemetry educational notes with tradeoff analysis
+- Real-world usage examples ([ssh-vault](https://github.com/ssh-vault/ssh-vault), [pg_exporter](https://github.com/nbari/pg_exporter), [s3m](https://github.com/s3m/s3m))
+
+### Notes
+This project is intentionally over-engineered as an educational template demonstrating:
+- Production-grade observability patterns (OpenTelemetry)
+- Modular CLI architecture with clean separation of concerns
+- Comprehensive testing including container integration tests
+- CI/CD best practices with GitHub Actions
+
+OpenTelemetry adds ~2-3 MB to binary but has zero runtime cost when disabled.
+See `CLI_ARCHITECTURE.md` for detailed discussion of design decisions.

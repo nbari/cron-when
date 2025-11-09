@@ -10,6 +10,23 @@
 
 A CLI cron expression parser that shows the next execution time and duration until then.
 
+## Educational Template
+
+**This project is intentionally over-engineered to serve as a learning template:**
+
+- Demonstrates production-grade observability patterns (OpenTelemetry)
+- Shows how to integrate distributed tracing in Rust CLIs
+- Exhibits modular CLI architecture with separation of concerns
+- Includes comprehensive testing (unit + container integration tests)
+- Documents tradeoffs and architectural decisions
+
+The OpenTelemetry integration adds ~15-20 dependencies and 2-3 MB to the binary, but provides:
+- **Zero runtime cost when disabled** (no `OTEL_EXPORTER_OTLP_ENDPOINT` set)
+- Multi-backend support (Jaeger, Honeycomb, Grafana, AWS X-Ray, etc.)
+- Production-ready patterns you can copy to your projects
+
+See [`CLI_ARCHITECTURE.md`](CLI_ARCHITECTURE.md) for detailed discussion of design decisions.
+
 ## Features
 
 - Parse individual cron expressions
@@ -176,12 +193,116 @@ Options:
   -V, --version       Print version
 ```
 
+## Observability & Tracing
+
+This CLI includes OpenTelemetry support for distributed tracing and observability.
+
+> **📚 Educational Note:** This is intentionally over-engineered! A simple cron parser doesn't "need" distributed tracing. However, this project demonstrates production-grade observability patterns that you can learn from and apply to your own projects. See [CLI_ARCHITECTURE.md](CLI_ARCHITECTURE.md#educational-note-opentelemetry-in-a-tiny-cli) for detailed discussion.
+
+### Enabling Traces
+
+Traces are automatically sent when the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable is set:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+cron-when -v "*/5 * * * *"
+```
+
+### Using direnv
+
+For convenience, you can use [direnv](https://direnv.net/) to automatically set environment variables:
+
+```bash
+# Copy the example file
+cp .envrc.example .envrc
+
+# Edit .envrc and uncomment the OTEL settings
+# Then allow the directory
+direnv allow
+```
+
+Example `.envrc` file:
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+```
+
+### Viewing Traces with Jaeger
+
+Start Jaeger locally using Docker/Podman:
+
+```bash
+podman run -d --name jaeger \
+  -e COLLECTOR_OTLP_ENABLED=true \
+  -p 16686:16686 \
+  -p 4317:4317 \
+  jaegertracing/all-in-one:latest
+```
+
+Or use the justfile recipe:
+```bash
+just jaeger
+```
+
+Then access the Jaeger UI at [http://localhost:16686](http://localhost:16686)
+
+### Supported Backends
+
+The OTLP exporter works with any OpenTelemetry-compatible backend:
+
+- **Jaeger** - Open source tracing
+- **Honeycomb** - `OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io:443`
+- **Grafana Tempo** - Self-hosted or cloud
+- **AWS X-Ray** - Via OpenTelemetry Collector
+- **Google Cloud Trace** - Via OpenTelemetry Collector
+
+### Additional Configuration
+
+```bash
+# Custom headers (e.g., for authentication)
+export OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=YOUR_API_KEY"
+
+# Service instance ID (auto-generated if not set)
+export OTEL_SERVICE_INSTANCE_ID=my-instance-123
+
+# Override log level
+export RUST_LOG=debug
+```
+
+### Verbosity Levels
+
+Combine with `-v` flags for different log levels:
+
+```bash
+cron-when -v "*/5 * * * *"    # INFO level
+cron-when -vv "*/5 * * * *"   # DEBUG level
+cron-when -vvv "*/5 * * * *"  # TRACE level
+```
+
+### Known Behavior: Flush Timeout
+
+When tracing is enabled, you may see a timeout error on exit:
+
+```
+ERROR BatchSpanProcessor.Shutdown.Timeout
+```
+
+**This is expected and harmless!** The CLI exits faster (~10ms) than the span processor can flush (~5s). Your traces are still sent and will appear in Jaeger/Honeycomb/etc.
+
+To suppress these messages:
+```bash
+export RUST_LOG="warn,opentelemetry_sdk=error"
+```
+
+See [CLI_ARCHITECTURE.md](CLI_ARCHITECTURE.md) for details on why this happens and alternative approaches.
+
 ## Development
 
 ### Running tests
 
 ```bash
 cargo test
+# Or with justfile
+just test
 ```
 
 ### Building

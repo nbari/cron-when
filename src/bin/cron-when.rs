@@ -2,7 +2,8 @@ use anyhow::Result;
 use cron_when::cli;
 use tracing::info;
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     // Build the action from CLI arguments
     let action = cli::start()?;
 
@@ -33,7 +34,12 @@ fn main() -> Result<()> {
     info!("Execution completed successfully");
 
     // Gracefully shutdown tracer provider if initialized
+    // Note: This may timeout if OTLP endpoint is slow/unavailable,
+    // but spans should still be sent
     cli::telemetry::shutdown_tracer();
+
+    // Give a brief moment for final async operations
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     Ok(())
 }

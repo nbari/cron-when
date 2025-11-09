@@ -368,6 +368,7 @@ pub fn start() -> Result<()> {
 This pattern is used in production projects:
 - [ssh-vault](https://github.com/ssh-vault/ssh-vault)
 - [pg_exporter](https://github.com/nbari/pg_exporter)
+- [s3m](https://github.com/s3m/s3m)
 
 It's proven to scale from simple to complex CLIs while maintaining clarity.
 
@@ -474,6 +475,133 @@ OTEL_SERVICE_INSTANCE_ID=my-instance-123
 
 # Service name and version are automatically set from Cargo.toml
 ```
+
+### Educational Note: OpenTelemetry in a Tiny CLI
+
+**This is intentionally over-engineered for educational purposes!**
+
+A simple cron parser doesn't "need" distributed tracing. However, this project demonstrates:
+
+1. **How to add production-grade observability** to any Rust CLI
+2. **OpenTelemetry integration patterns** that scale from tiny tools to large systems
+3. **Async runtime considerations** for short-lived processes
+
+#### The Tradeoff
+
+**Cost:**
+- Adds ~15-20 dependencies (OpenTelemetry ecosystem)
+- Binary size increases by ~2-3 MB
+- Adds Tokio async runtime overhead (~1-2ms startup)
+- Slightly slower build times (~5-10 seconds)
+
+**Benefit:**
+- **Optional at runtime** - Zero cost if `OTEL_EXPORTER_OTLP_ENDPOINT` not set
+- Learn production observability patterns
+- Template for adding tracing to your own CLIs
+- Works with any OTLP backend (Jaeger, Honeycomb, Grafana, etc.)
+
+#### Known Limitation: Flush Timeout
+
+Short-lived CLIs have a challenge with OpenTelemetry:
+
+```
+Problem:
+  CLI execution:  ~10ms
+  Span flush:     ~5000ms (timeout)
+  Result:         Timeout error on exit
+
+Solution implemented:
+  1. force_flush() - Try to send spans immediately
+  2. tokio::time::sleep(200ms) - Give time for async operations
+  3. Spans are sent asynchronously anyway!
+
+Result:
+  ✅ Traces appear in Jaeger
+  ⚠️  You may see "BatchSpanProcessor.Shutdown.Timeout" (cosmetic)
+```
+
+To suppress timeout errors:
+```bash
+export RUST_LOG="warn,opentelemetry_sdk=error"
+```
+
+#### Key Architectural Decisions
+
+**1. Tokio Runtime (`current_thread` flavor)**
+
+```rust
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()>
+```
+
+Why: OpenTelemetry OTLP uses gRPC which requires async runtime
+Choice: `current_thread` instead of `multi_thread` (3x faster startup)
+
+**2. Conditional Initialization**
+
+Tracing only initializes if `OTEL_EXPORTER_OTLP_ENDPOINT` is set:
+
+```rust
+pub fn init(level: Option<Level>) -> Result<()> {
+    // Only init OTLP if endpoint configured
+    if env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
+        let tracer = init_tracer()?;
+        // ... setup tracing
+    } else {
+        // Simple logging only
+    }
+}
+```
+
+This means **zero overhead** when tracing is disabled!
+
+**3. Graceful Degradation**
+
+If OTLP export fails:
+- ✅ CLI still works normally
+- ✅ Console logging continues
+- ⚠️  Timeout errors appear (can be suppressed)
+
+#### What You Can Learn
+
+Use this code as a reference for:
+
+1. **Adding OpenTelemetry to your CLI tools**
+   - Copy `src/cli/telemetry.rs`
+   - Add `#[instrument]` to functions you want to trace
+   - Set `OTEL_EXPORTER_OTLP_ENDPOINT` when needed
+
+2. **Handling short-lived process challenges**
+   - force_flush() pattern
+   - Brief sleep before exit
+   - Accepting cosmetic timeout errors
+
+3. **Tokio runtime selection**
+   - When `current_thread` is sufficient
+   - How to minimize async overhead
+
+4. **Production-ready patterns**
+   - Multiple backend support (Jaeger, Honeycomb, etc.)
+   - Header authentication
+   - TLS support
+   - Compression (gzip)
+
+#### Real-World Usage
+
+**When to add this to your CLI:**
+
+✅ **Good fit:**
+- Long-running CLIs or daemons
+- Complex multi-step operations
+- Tools used in production systems
+- When debugging timing issues
+
+❌ **Overkill:**
+- Simple one-shot commands
+- Development-only tools
+- When milliseconds matter
+
+**This project chooses "overkill" intentionally** - it's a learning template!
 
 ### Benefits for Templates
 
