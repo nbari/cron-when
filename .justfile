@@ -180,6 +180,7 @@ t-deploy message="CI test": check-develop check-clean test
     #!/usr/bin/env bash
     set -euo pipefail
 
+    TAG_MESSAGE="{{message}}"
     ts="$(date -u +%Y%m%d-%H%M%S)"
     tag="t-${ts}"
 
@@ -191,7 +192,7 @@ t-deploy message="CI test": check-develop check-clean test
         exit 1
     fi
 
-    git tag -s "${tag}" -m "${message}"
+    git tag -s "${tag}" -m "${TAG_MESSAGE}"
     git push origin "${tag}"
 
     echo "✅ Pushed ${tag}"
