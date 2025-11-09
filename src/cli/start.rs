@@ -1,0 +1,31 @@
+use crate::cli::{actions::Action, commands, dispatch, telemetry};
+use anyhow::Result;
+
+/// Map verbosity count to tracing level
+fn get_verbosity_level(verbose_count: u8) -> Option<tracing::Level> {
+    match verbose_count {
+        0 => None,
+        1 => Some(tracing::Level::INFO),
+        2 => Some(tracing::Level::DEBUG),
+        3 => Some(tracing::Level::TRACE),
+        _ => Some(tracing::Level::TRACE),
+    }
+}
+
+/// Main entry point for the CLI - builds and returns the Action
+pub fn start() -> Result<Action> {
+    // 1. Parse command-line arguments
+    let matches = commands::new().get_matches();
+
+    // 2. Extract verbosity level
+    let verbosity_level = get_verbosity_level(matches.get_count("verbose"));
+
+    // 3. Initialize telemetry
+    telemetry::init(verbosity_level)?;
+
+    // 4. Dispatch to appropriate action
+    let action = dispatch::handler(&matches)?;
+
+    // 5. Return the action for execution by the binary
+    Ok(action)
+}

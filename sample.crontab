@@ -1,0 +1,16 @@
+# Sample crontab file for testing
+
+# Run backup every day at 2 AM
+0 2 * * * /usr/local/bin/backup.sh
+
+# Clean temporary files every hour
+0 * * * * /usr/local/bin/cleanup.sh
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# Send weekly report every Monday at 9 AM
+0 9 * * 1 /usr/local/bin/weekly-report.sh
+
+# Run monitoring every 5 minutes
+*/5 * * * * /usr/local/bin/monitor.sh
