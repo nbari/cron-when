@@ -7,6 +7,7 @@ use tracing::{debug, info, instrument, warn};
 #[derive(Debug, Clone)]
 pub struct CronEntry {
     pub expression: String,
+    pub command: Option<String>,
     pub comment: Option<String>,
 }
 
@@ -75,12 +76,13 @@ fn parse_content(content: &str) -> Vec<CronEntry> {
         }
 
         // Try to parse as cron entry
-        if let Some(expression) = extract_cron_expression(trimmed) {
+        if let Some((expression, command)) = extract_cron_entry(trimmed) {
             // Check if previous line was a comment
             let comment = extract_previous_comment(&lines, i);
             debug!(expression = %expression, has_comment = comment.is_some(), "Found cron entry");
             entries.push(CronEntry {
                 expression,
+                command,
                 comment,
             });
         } else {
@@ -105,12 +107,14 @@ fn is_env_var(line: &str) -> bool {
     false
 }
 
-/// Extract cron expression from a line (first 5 fields)
-fn extract_cron_expression(line: &str) -> Option<String> {
+/// Extract cron expression and command from a line
+fn extract_cron_entry(line: &str) -> Option<(String, Option<String>)> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() >= 6 {
         // Standard cron: 5 time fields + command
-        Some(parts[0..5].join(" "))
+        let expression = parts[0..5].join(" ");
+        let command = Some(parts[5..].join(" "));
+        Some((expression, command))
     } else {
         None
     }
@@ -152,15 +156,18 @@ SHELL=/bin/bash
         assert_eq!(entries.len(), 3);
 
         assert_eq!(entries[0].expression, "*/5 * * * *");
+        assert_eq!(entries[0].command, Some("/usr/bin/script1.sh".to_string()));
         assert_eq!(entries[0].comment, Some("Run every 5 minutes".to_string()));
 
         assert_eq!(entries[1].expression, "0 0 * * *");
+        assert_eq!(entries[1].command, Some("/usr/bin/backup.sh".to_string()));
         assert_eq!(
             entries[1].comment,
             Some("Daily backup at midnight".to_string())
         );
 
         assert_eq!(entries[2].expression, "30 2 * * 1");
+        assert_eq!(entries[2].command, Some("/usr/bin/weekly.sh".to_string()));
         assert_eq!(entries[2].comment, None);
     }
 
@@ -185,16 +192,22 @@ SHELL=/bin/bash
     }
 
     #[test]
-    fn test_extract_cron_expression() {
+    fn test_extract_cron_entry() {
         assert_eq!(
-            extract_cron_expression("*/5 * * * * /usr/bin/script.sh"),
-            Some("*/5 * * * *".to_string())
+            extract_cron_entry("*/5 * * * * /usr/bin/script.sh"),
+            Some((
+                "*/5 * * * *".to_string(),
+                Some("/usr/bin/script.sh".to_string())
+            ))
         );
         assert_eq!(
-            extract_cron_expression("0 0 * * * command with args"),
-            Some("0 0 * * *".to_string())
+            extract_cron_entry("0 0 * * * command with args"),
+            Some((
+                "0 0 * * *".to_string(),
+                Some("command with args".to_string())
+            ))
         );
-        assert_eq!(extract_cron_expression("invalid"), None);
-        assert_eq!(extract_cron_expression("0 0 * *"), None);
+        assert_eq!(extract_cron_entry("invalid"), None);
+        assert_eq!(extract_cron_entry("0 0 * *"), None);
     }
 }

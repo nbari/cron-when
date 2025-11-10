@@ -1,13 +1,25 @@
 use crate::crontab::CronEntry;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, Utc};
+use colored::*;
 use compound_duration::format_dhms;
 use cron_parser::parse;
 use tracing::{debug, info, instrument};
 
 /// Display a single cron expression
-#[instrument(level = "info", skip(comment), fields(expression = %expression, verbose = %verbose))]
-pub fn display_single(expression: &str, verbose: bool, comment: Option<&str>) -> Result<()> {
+#[instrument(level = "info", skip(comment, command), fields(expression = %expression, verbose = %verbose, color = %color))]
+pub fn display_single(
+    expression: &str,
+    verbose: bool,
+    comment: Option<&str>,
+    command: Option<&str>,
+    color: bool,
+) -> Result<()> {
+    // Force colors on if explicitly requested, regardless of TTY detection
+    if color {
+        colored::control::set_override(true);
+    }
+
     let now = Utc::now();
     debug!("Current time: {}", format_datetime(&now));
 
@@ -27,13 +39,36 @@ pub fn display_single(expression: &str, verbose: bool, comment: Option<&str>) ->
 
     // Format output
     if let Some(comment_text) = comment {
-        println!("# {}", comment_text);
+        if color {
+            println!("{}", format!("# {}", comment_text).bright_black());
+        } else {
+            println!("# {}", comment_text);
+        }
     }
 
     // Always show cron expression with quotes for clarity
-    println!("Cron: \"{}\"", expression);
-    println!("Next: {}", format_datetime(&next));
-    println!("Left: {}", format_dhms(seconds));
+    if color {
+        println!("{} \"{}\"", "Cron:".green().bold(), expression.yellow());
+    } else {
+        println!("Cron: \"{}\"", expression);
+    }
+
+    // Show command if available
+    if let Some(cmd) = command {
+        if color {
+            println!("{} {}", "Command:".red().bold(), cmd.white());
+        } else {
+            println!("Command: {}", cmd);
+        }
+    }
+
+    if color {
+        println!("{} {}", "Next:".blue().bold(), format_datetime(&next));
+        println!("{} {}", "Left:".yellow().bold(), format_dhms(seconds));
+    } else {
+        println!("Next: {}", format_datetime(&next));
+        println!("Left: {}", format_dhms(seconds));
+    }
 
     // Add separator for multiple entries
     println!();
@@ -42,8 +77,13 @@ pub fn display_single(expression: &str, verbose: bool, comment: Option<&str>) ->
 }
 
 /// Display multiple cron entries
-#[instrument(level = "info", fields(entry_count = entries.len(), verbose = %verbose))]
-pub fn display_entries(entries: &[CronEntry], verbose: bool) -> Result<()> {
+#[instrument(level = "info", fields(entry_count = entries.len(), verbose = %verbose, color = %color))]
+pub fn display_entries(entries: &[CronEntry], verbose: bool, color: bool) -> Result<()> {
+    // Force colors on if explicitly requested, regardless of TTY detection
+    if color {
+        colored::control::set_override(true);
+    }
+
     if entries.is_empty() {
         info!("No cron entries to display");
         println!("No valid cron entries found");
@@ -54,7 +94,13 @@ pub fn display_entries(entries: &[CronEntry], verbose: bool) -> Result<()> {
 
     for (i, entry) in entries.iter().enumerate() {
         debug!(index = i, expression = %entry.expression, "Processing entry");
-        display_single(&entry.expression, verbose, entry.comment.as_deref())?;
+        display_single(
+            &entry.expression,
+            verbose,
+            entry.comment.as_deref(),
+            entry.command.as_deref(),
+            color,
+        )?;
     }
 
     Ok(())
@@ -177,39 +223,39 @@ mod tests {
 
     #[test]
     fn test_display_single_valid() {
-        let result = display_single("*/5 * * * *", false, None);
+        let result = display_single("*/5 * * * *", false, None, None, false);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_display_single_valid_verbose() {
         // Verbose parameter should not affect output anymore
-        let result = display_single("*/5 * * * *", true, None);
+        let result = display_single("*/5 * * * *", true, None, None, false);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_display_single_with_comment() {
-        let result = display_single("0 * * * *", false, Some("Run every hour"));
+        let result = display_single("0 * * * *", false, Some("Run every hour"), None, false);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_display_single_invalid() {
-        let result = display_single("invalid", false, None);
+        let result = display_single("invalid", false, None, None, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_display_single_invalid_expression_with_comment() {
-        let result = display_single("not a cron", false, Some("This will fail"));
+        let result = display_single("not a cron", false, Some("This will fail"), None, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_display_entries_empty() {
         let entries = Vec::new();
-        let result = display_entries(&entries, false);
+        let result = display_entries(&entries, false, false);
         assert!(result.is_ok());
     }
 
@@ -217,9 +263,10 @@ mod tests {
     fn test_display_entries_single() {
         let entries = vec![CronEntry {
             expression: "0 * * * *".to_string(),
+            command: None,
             comment: None,
         }];
-        let result = display_entries(&entries, false);
+        let result = display_entries(&entries, false, false);
         assert!(result.is_ok());
     }
 
@@ -228,18 +275,21 @@ mod tests {
         let entries = vec![
             CronEntry {
                 expression: "0 * * * *".to_string(),
+                command: Some("/usr/bin/backup.sh".to_string()),
                 comment: Some("Hourly backup".to_string()),
             },
             CronEntry {
                 expression: "0 0 * * *".to_string(),
+                command: Some("/usr/bin/cleanup.sh".to_string()),
                 comment: Some("Daily cleanup".to_string()),
             },
             CronEntry {
                 expression: "*/15 * * * *".to_string(),
+                command: None,
                 comment: None,
             },
         ];
-        let result = display_entries(&entries, false);
+        let result = display_entries(&entries, false, false);
         assert!(result.is_ok());
     }
 
@@ -248,15 +298,17 @@ mod tests {
         let entries = vec![
             CronEntry {
                 expression: "0 * * * *".to_string(),
+                command: None,
                 comment: None,
             },
             CronEntry {
                 expression: "invalid cron".to_string(),
+                command: None,
                 comment: None,
             },
         ];
         // Should fail on the invalid entry
-        let result = display_entries(&entries, false);
+        let result = display_entries(&entries, false, false);
         assert!(result.is_err());
     }
 
@@ -301,7 +353,7 @@ mod tests {
         ];
 
         for expr in expressions {
-            let result = display_single(expr, false, None);
+            let result = display_single(expr, false, None, None, false);
             assert!(result.is_ok(), "Failed to parse cron expression: {}", expr);
         }
     }
@@ -323,7 +375,7 @@ mod tests {
         ];
 
         for expr in invalid_expressions {
-            let result = display_single(expr, false, None);
+            let result = display_single(expr, false, None, None, false);
             assert!(result.is_err(), "Should have failed for: {}", expr);
         }
     }

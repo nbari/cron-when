@@ -12,9 +12,14 @@ pub enum Action {
         expression: String,
         verbose: bool,
         next: Option<u32>,
+        color: bool,
     },
     /// Parse and display crontab from a file
-    File { path: PathBuf, verbose: bool },
+    File {
+        path: PathBuf,
+        verbose: bool,
+        color: bool,
+    },
     /// Parse and display current user's crontab
-    Crontab { verbose: bool },
+    Crontab { verbose: bool, color: bool },
 }

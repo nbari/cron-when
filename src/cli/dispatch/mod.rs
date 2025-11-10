@@ -1,6 +1,7 @@
 use crate::cli::actions::Action;
 use anyhow::Result;
 use clap::ArgMatches;
+use std::env;
 use std::path::PathBuf;
 
 /// Convert ArgMatches into an Action
@@ -11,19 +12,27 @@ pub fn handler(matches: &ArgMatches) -> Result<Action> {
     // Extract next count if provided
     let next = matches.get_one::<u32>("next").copied();
 
+    // Extract color flag - check CLI flag first, then environment variable
+    let color = matches.get_flag("color")
+        || env::var("CRON_WHEN_COLOR")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
     // Check which mode was requested
     if matches.get_flag("crontab") {
-        Ok(Action::Crontab { verbose })
+        Ok(Action::Crontab { verbose, color })
     } else if let Some(file_path) = matches.get_one::<String>("file") {
         Ok(Action::File {
             path: PathBuf::from(file_path),
             verbose,
+            color,
         })
     } else if let Some(expression) = matches.get_one::<String>("cron") {
         Ok(Action::Single {
             expression: expression.clone(),
             verbose,
             next,
+            color,
         })
     } else {
         anyhow::bail!(
@@ -56,7 +65,13 @@ mod tests {
     fn test_handler_crontab() {
         let matches = commands::new().get_matches_from(vec!["cron-when", "--crontab"]);
         let action = handler(&matches).unwrap();
-        assert!(matches!(action, Action::Crontab { verbose: false }));
+        assert!(matches!(
+            action,
+            Action::Crontab {
+                verbose: false,
+                color: false
+            }
+        ));
     }
 
     #[test]

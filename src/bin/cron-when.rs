@@ -15,19 +15,24 @@ async fn main() -> Result<()> {
             expression,
             verbose,
             next,
+            color,
         } => {
             info!(action = "single", "Executing single expression");
-            cli::actions::single::execute(&expression, verbose, next)?
+            cli::actions::single::execute(&expression, verbose, next, color)?
         }
 
-        cli::actions::Action::File { path, verbose } => {
+        cli::actions::Action::File {
+            path,
+            verbose,
+            color,
+        } => {
             info!(action = "file", path = %path.display(), "Executing file parsing");
-            cli::actions::file::execute(&path, verbose)?
+            cli::actions::file::execute(&path, verbose, color)?
         }
 
-        cli::actions::Action::Crontab { verbose } => {
+        cli::actions::Action::Crontab { verbose, color } => {
             info!(action = "crontab", "Executing crontab parsing");
-            cli::actions::crontab::execute(verbose)?
+            cli::actions::crontab::execute(verbose, color)?
         }
     }
 
