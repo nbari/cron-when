@@ -126,8 +126,15 @@ mod tests {
 
         // Verify the format has three parts: UTC datetime, local time, and timezone
         let parts: Vec<&str> = formatted.split('(').collect();
-        assert_eq!(parts.len(), 2, "Format should have UTC and local time parts");
-        assert!(parts[0].ends_with("UTC "), "First part should end with 'UTC '");
+        assert_eq!(
+            parts.len(),
+            2,
+            "Format should have UTC and local time parts"
+        );
+        assert!(
+            parts[0].ends_with("UTC "),
+            "First part should end with 'UTC '"
+        );
         assert!(parts[1].ends_with(')'), "Second part should end with ')'");
     }
 
@@ -142,18 +149,30 @@ mod tests {
         assert!(formatted.starts_with("2024-06-15 14:30:00 UTC"));
 
         // The local time part should be in parentheses
-        let local_part_start = formatted.find('(').expect("Should have opening parenthesis");
-        let local_part_end = formatted.find(')').expect("Should have closing parenthesis");
+        let local_part_start = formatted
+            .find('(')
+            .expect("Should have opening parenthesis");
+        let local_part_end = formatted
+            .find(')')
+            .expect("Should have closing parenthesis");
         assert!(local_part_end > local_part_start);
 
         // Extract local time part and verify it has time and timezone
         let local_part = &formatted[local_part_start + 1..local_part_end];
         let local_parts: Vec<&str> = local_part.split_whitespace().collect();
-        assert_eq!(local_parts.len(), 2, "Local part should have time and timezone");
+        assert_eq!(
+            local_parts.len(),
+            2,
+            "Local part should have time and timezone"
+        );
 
         // Verify time format HH:MM:SS
         let time_components: Vec<&str> = local_parts[0].split(':').collect();
-        assert_eq!(time_components.len(), 3, "Time should have hours, minutes, seconds");
+        assert_eq!(
+            time_components.len(),
+            3,
+            "Time should have hours, minutes, seconds"
+        );
     }
 
     #[test]
@@ -269,16 +288,16 @@ mod tests {
     fn test_various_cron_expressions() {
         // Test various valid cron expressions
         let expressions = vec![
-            "* * * * *",           // Every minute
-            "0 * * * *",           // Every hour
-            "0 0 * * *",           // Daily at midnight
-            "0 0 * * 0",           // Weekly on Sunday
-            "0 0 1 * *",           // Monthly on 1st
-            "*/15 * * * *",        // Every 15 minutes
-            "0 9-17 * * 1-5",      // Weekdays 9am-5pm
-            "30 2 * * *",          // Daily at 2:30am
-            "0 */2 * * *",         // Every 2 hours
-            "0 0 1 1 *",           // Yearly on Jan 1st
+            "* * * * *",      // Every minute
+            "0 * * * *",      // Every hour
+            "0 0 * * *",      // Daily at midnight
+            "0 0 * * 0",      // Weekly on Sunday
+            "0 0 1 * *",      // Monthly on 1st
+            "*/15 * * * *",   // Every 15 minutes
+            "0 9-17 * * 1-5", // Weekdays 9am-5pm
+            "30 2 * * *",     // Daily at 2:30am
+            "0 */2 * * *",    // Every 2 hours
+            "0 0 1 1 *",      // Yearly on Jan 1st
         ];
 
         for expr in expressions {
@@ -293,14 +312,14 @@ mod tests {
         let invalid_expressions = vec![
             "",
             "invalid",
-            "* * * *",              // Too few fields
-            "* * * * * *",          // Too many fields
-            "60 * * * *",           // Invalid minute
-            "* 24 * * *",           // Invalid hour
-            "* * 32 * *",           // Invalid day
-            "* * * 13 *",           // Invalid month
-            "* * * * 7",            // Invalid day of week
-            "xyz * * * *",          // Non-numeric
+            "* * * *",     // Too few fields
+            "* * * * * *", // Too many fields
+            "60 * * * *",  // Invalid minute
+            "* 24 * * *",  // Invalid hour
+            "* * 32 * *",  // Invalid day
+            "* * * 13 *",  // Invalid month
+            "* * * * 7",   // Invalid day of week
+            "xyz * * * *", // Non-numeric
         ];
 
         for expr in invalid_expressions {
