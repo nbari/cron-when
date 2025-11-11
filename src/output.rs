@@ -213,9 +213,8 @@ mod tests {
         );
 
         // Verify time format HH:MM:SS
-        let time_components: Vec<&str> = local_parts[0].split(':').collect();
         assert_eq!(
-            time_components.len(),
+            local_parts[0].split(':').count(),
             3,
             "Time should have hours, minutes, seconds"
         );

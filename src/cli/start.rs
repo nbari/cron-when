@@ -2,7 +2,7 @@ use crate::cli::{actions::Action, commands, dispatch, telemetry};
 use anyhow::Result;
 
 /// Map verbosity count to tracing level
-fn get_verbosity_level(verbose_count: u8) -> Option<tracing::Level> {
+const fn get_verbosity_level(verbose_count: u8) -> Option<tracing::Level> {
     match verbose_count {
         0 => None,
         1 => Some(tracing::Level::INFO),
