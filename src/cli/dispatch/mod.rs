@@ -4,7 +4,11 @@ use clap::ArgMatches;
 use std::env;
 use std::path::PathBuf;
 
-/// Convert ArgMatches into an Action
+/// Convert `ArgMatches` into an Action
+///
+/// # Errors
+///
+/// Returns an error if no valid action can be determined from the matches
 pub fn handler(matches: &ArgMatches) -> Result<Action> {
     // Determine verbosity level
     let verbose = matches.get_count("verbose") > 0;
@@ -50,38 +54,46 @@ mod tests {
     #[test]
     fn test_handler_single() {
         let matches = commands::new().get_matches_from(vec!["cron-when", "*/5 * * * *"]);
-        let action = handler(&matches).unwrap();
-        assert!(matches!(action, Action::Single { .. }));
+        let action = handler(&matches);
+        assert!(action.is_ok());
+        if let Ok(action) = action {
+            assert!(matches!(action, Action::Single { .. }));
+        }
     }
 
     #[test]
     fn test_handler_file() {
         let matches = commands::new().get_matches_from(vec!["cron-when", "-f", "test.crontab"]);
-        let action = handler(&matches).unwrap();
-        assert!(matches!(action, Action::File { .. }));
+        let action = handler(&matches);
+        assert!(action.is_ok());
+        if let Ok(action) = action {
+            assert!(matches!(action, Action::File { .. }));
+        }
     }
 
     #[test]
     fn test_handler_crontab() {
         let matches = commands::new().get_matches_from(vec!["cron-when", "--crontab"]);
-        let action = handler(&matches).unwrap();
-        assert!(matches!(
-            action,
-            Action::Crontab {
-                verbose: false,
-                color: false
-            }
-        ));
+        let action = handler(&matches);
+        assert!(action.is_ok());
+        if let Ok(action) = action {
+            assert!(matches!(
+                action,
+                Action::Crontab {
+                    verbose: false,
+                    color: false
+                }
+            ));
+        }
     }
 
     #[test]
     fn test_handler_verbose() {
         let matches = commands::new().get_matches_from(vec!["cron-when", "-v", "*/5 * * * *"]);
-        let action = handler(&matches).unwrap();
-        if let Action::Single { verbose, .. } = action {
+        let action = handler(&matches);
+        assert!(action.is_ok());
+        if let Ok(Action::Single { verbose, .. }) = action {
             assert!(verbose);
-        } else {
-            panic!("Expected Single action");
         }
     }
 
@@ -96,11 +108,10 @@ mod tests {
     fn test_handler_next() {
         let matches =
             commands::new().get_matches_from(vec!["cron-when", "--next", "5", "*/5 * * * *"]);
-        let action = handler(&matches).unwrap();
-        if let Action::Single { next, .. } = action {
+        let action = handler(&matches);
+        assert!(action.is_ok());
+        if let Ok(Action::Single { next, .. }) = action {
             assert_eq!(next, Some(5));
-        } else {
-            panic!("Expected Single action");
         }
     }
 }

@@ -60,7 +60,10 @@ use opentelemetry_sdk::{
     trace::{SdkTracerProvider, Tracer},
 };
 use std::{collections::HashMap, env::var, time::Duration};
-use tonic::{metadata::*, transport::ClientTlsConfig};
+use tonic::{
+    metadata::{Ascii, Binary, MetadataKey, MetadataMap, MetadataValue},
+    transport::ClientTlsConfig,
+};
 use tracing::{Level, debug};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 use ulid::Ulid;
@@ -92,20 +95,20 @@ fn headers_to_metadata(headers: &HashMap<String, String>) -> Result<MetadataMap>
         if key_str.ends_with("-bin") {
             let bytes = general_purpose::STANDARD
                 .decode(v.as_bytes())
-                .map_err(|e| anyhow!("failed to base64-decode value for key {}: {}", key_str, e))?;
+                .map_err(|e| anyhow!("failed to base64-decode value for key {key_str}: {e}"))?;
 
             let key = MetadataKey::<Binary>::from_bytes(key_str.as_bytes())
-                .map_err(|e| anyhow!("invalid binary metadata key {}: {}", key_str, e))?;
+                .map_err(|e| anyhow!("invalid binary metadata key {key_str}: {e}"))?;
 
             let val = MetadataValue::from_bytes(&bytes);
             meta.insert_bin(key, val);
         } else {
             let key = MetadataKey::<Ascii>::from_bytes(key_str.as_bytes())
-                .map_err(|e| anyhow!("invalid ASCII metadata key {}: {}", key_str, e))?;
+                .map_err(|e| anyhow!("invalid ASCII metadata key {key_str}: {e}"))?;
 
             let val: MetadataValue<_> = v
                 .parse()
-                .map_err(|e| anyhow!("invalid ASCII metadata value for key {}: {}", key_str, e))?;
+                .map_err(|e| anyhow!("invalid ASCII metadata value for key {key_str}: {e}"))?;
             meta.insert(key, val);
         }
     }
@@ -158,7 +161,7 @@ fn init_tracer() -> Result<Tracer> {
     {
         let tls = ClientTlsConfig::new()
             .domain_name(host.to_string())
-            .with_native_roots();
+            .with_webpki_roots();
         builder = builder.with_tls_config(tls);
     }
 
@@ -200,7 +203,12 @@ fn init_tracer() -> Result<Tracer> {
 }
 
 /// Initialize logging + (optional) tracing exporter
-/// Tracing is enabled if OTEL_EXPORTER_OTLP_ENDPOINT is set (gRPC only).
+///
+/// Tracing is enabled if `OTEL_EXPORTER_OTLP_ENDPOINT` is set (gRPC only).
+///
+/// # Errors
+///
+/// Returns an error if tracer initialization or subscriber setup fails
 pub fn init(verbosity_level: Option<Level>) -> Result<()> {
     let verbosity_level = verbosity_level.unwrap_or(Level::ERROR);
 
@@ -256,13 +264,13 @@ pub fn init(verbosity_level: Option<Level>) -> Result<()> {
 ///
 /// ## Why This Happens
 ///
-/// OpenTelemetry uses a BatchSpanProcessor which batches spans for efficiency.
+/// `OpenTelemetry` uses a `BatchSpanProcessor` which batches spans for efficiency.
 /// For long-running services this is perfect. For CLIs that exit in milliseconds,
 /// we can't wait for the full batch timeout.
 ///
 /// ## Alternative Solutions Not Used Here
 ///
-/// 1. **SimpleSpanProcessor**: Sends each span immediately (slower, no batching)
+/// 1. **`SimpleSpanProcessor`**: Sends each span immediately (slower, no batching)
 /// 2. **Longer sleep**: Wait 5+ seconds before exit (defeats CLI speed)
 /// 3. **Fire and forget**: Don't call shutdown (proper cleanup is better)
 ///
@@ -275,12 +283,12 @@ pub fn shutdown_tracer() {
         // Force flush all pending spans
         // Note: May timeout for short-lived CLIs, but spans are sent anyway
         if let Err(e) = tp.force_flush() {
-            eprintln!("Failed to flush spans: {}", e);
+            eprintln!("Failed to flush spans: {e}");
         }
 
         // Shutdown the provider
         if let Err(e) = tp.shutdown() {
-            eprintln!("Failed to shutdown tracer provider: {}", e);
+            eprintln!("Failed to shutdown tracer provider: {e}");
         }
 
         debug!("tracer provider shutdown complete");
@@ -336,8 +344,9 @@ mod tests {
         let headers = HashMap::new();
         let result = headers_to_metadata(&headers);
         assert!(result.is_ok());
-        let metadata = result.unwrap();
-        assert_eq!(metadata.len(), 0);
+        if let Ok(metadata) = result {
+            assert_eq!(metadata.len(), 0);
+        }
     }
 
     #[test]
@@ -348,8 +357,9 @@ mod tests {
 
         let result = headers_to_metadata(&headers);
         assert!(result.is_ok());
-        let metadata = result.unwrap();
-        assert_eq!(metadata.len(), 2);
+        if let Ok(metadata) = result {
+            assert_eq!(metadata.len(), 2);
+        }
     }
 
     #[test]
@@ -360,8 +370,9 @@ mod tests {
 
         let result = headers_to_metadata(&headers);
         assert!(result.is_ok());
-        let metadata = result.unwrap();
-        assert_eq!(metadata.len(), 1);
+        if let Ok(metadata) = result {
+            assert_eq!(metadata.len(), 1);
+        }
     }
 
     #[test]
@@ -371,12 +382,9 @@ mod tests {
 
         let result = headers_to_metadata(&headers);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("failed to base64-decode")
-        );
+        if let Err(e) = result {
+            assert!(e.to_string().contains("failed to base64-decode"));
+        }
     }
 
     #[test]
@@ -387,8 +395,9 @@ mod tests {
 
         let result = headers_to_metadata(&headers);
         assert!(result.is_ok());
-        let metadata = result.unwrap();
-        assert_eq!(metadata.len(), 2);
+        if let Ok(metadata) = result {
+            assert_eq!(metadata.len(), 2);
+        }
     }
 
     #[test]

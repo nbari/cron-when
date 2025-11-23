@@ -2,6 +2,8 @@
 
 This document describes the modular CLI architecture used in this project. This pattern provides excellent separation of concerns and is ideal for template projects.
 
+> **📋 Template Note:** This architecture is designed to be copied to other Rust CLI projects. The separation allows you to keep the entire `src/cli/` directory and only replace your domain-specific logic (like `src/crontab.rs` and `src/output.rs` in this example). See [`.github/TEMPLATE.md`](.github/TEMPLATE.md) for usage instructions.
+
 ## Directory Structure
 
 ```

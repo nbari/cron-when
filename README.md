@@ -14,18 +14,61 @@ A CLI cron expression parser that shows the next execution time and duration unt
 
 **This project is intentionally over-engineered to serve as a learning template:**
 
-- Demonstrates production-grade observability patterns (OpenTelemetry)
+- Demonstrates production-grade observability patterns (OpenTelemetry with gRPC/TLS)
 - Shows how to integrate distributed tracing in Rust CLIs
 - Exhibits modular CLI architecture with separation of concerns
+- Uses pure Rust TLS implementation (rustls + webpki-roots, no OpenSSL)
 - Includes comprehensive testing (unit + container integration tests)
+- Applies strict clippy lints for code quality and safety
 - Documents tradeoffs and architectural decisions
 
-The OpenTelemetry integration adds ~15-20 dependencies and 2-3 MB to the binary, but provides:
-- **Zero runtime cost when disabled** (no `OTEL_EXPORTER_OTLP_ENDPOINT` set)
-- Multi-backend support (Jaeger, Honeycomb, Grafana, AWS X-Ray, etc.)
-- Production-ready patterns you can copy to your projects
+### Key Technical Decisions
+
+- **TLS Implementation**: Pure Rust using `rustls` with `webpki-roots`
+  - No system OpenSSL dependency required
+  - Simplified cross-platform builds (especially Windows)
+  - Same security guarantees, fully portable
+
+- **OpenTelemetry Integration**: Adds ~15-20 dependencies and 2-3 MB to binary
+  - **Zero runtime cost when disabled** (no `OTEL_EXPORTER_OTLP_ENDPOINT` set)
+  - Multi-backend support (Jaeger, Honeycomb, Grafana, AWS X-Ray, etc.)
+  - Uses gRPC over TLS with rustls for secure trace export
+
+- **Code Quality**: Strict clippy lints enforced
+  - All `pedantic` lints enabled
+  - Safety lints: no `unwrap()`, `expect()`, `panic!()`, or unsafe indexing in production code
+  - Comprehensive error handling and documentation
 
 See [`CLI_ARCHITECTURE.md`](CLI_ARCHITECTURE.md) for detailed discussion of design decisions.
+
+### 🚀 Using This as a Template
+
+This project is designed to be copied and adapted for your own Rust CLIs:
+
+```bash
+# 1. Copy the project
+git clone https://github.com/nbari/cron-when my-new-cli
+cd my-new-cli && rm -rf .git && git init
+
+# 2. Update Cargo.toml
+# - name = "my-new-cli"
+# - authors, description, repository
+
+# 3. What to keep vs replace:
+# ✅ KEEP: src/cli/ (entire architecture)
+# ✅ KEEP: .github/workflows/ (auto-detects package name)
+# ✅ KEEP: Strict clippy lints, deny.toml
+# 🔄 REPLACE: src/crontab.rs, src/output.rs (your domain logic)
+# 🔄 UPDATE: src/cli/actions/mod.rs (your action enum)
+```
+
+**Why this makes a good template:**
+- No system dependencies (pure Rust, no OpenSSL)
+- Workflows auto-configure from Cargo.toml
+- Strict quality standards enforced
+- Production patterns included (observability, error handling, testing)
+
+See [`.github/TEMPLATE.md`](.github/TEMPLATE.md) for detailed instructions.
 
 ## Features
 
@@ -39,6 +82,11 @@ See [`CLI_ARCHITECTURE.md`](CLI_ARCHITECTURE.md) for detailed discussion of desi
 
 ## Installation
 
+### Prerequisites
+
+- Rust toolchain (no system dependencies required)
+- This project uses pure Rust dependencies (rustls), so no OpenSSL installation needed
+
 ### From source
 
 ```bash
@@ -49,6 +97,18 @@ cargo install --path .
 
 ```bash
 cargo install cron-when
+```
+
+### Building static binaries (Linux)
+
+For fully static binaries that work on any Linux distribution:
+
+```bash
+# Install musl target
+rustup target add x86_64-unknown-linux-musl
+
+# Build static binary
+cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 ## Usage

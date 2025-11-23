@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
             color,
         } => {
             info!(action = "single", "Executing single expression");
-            cli::actions::single::execute(&expression, verbose, next, color)?
+            cli::actions::single::execute(&expression, verbose, next, color)?;
         }
 
         cli::actions::Action::File {
@@ -27,12 +27,12 @@ async fn main() -> Result<()> {
             color,
         } => {
             info!(action = "file", path = %path.display(), "Executing file parsing");
-            cli::actions::file::execute(&path, verbose, color)?
+            cli::actions::file::execute(&path, verbose, color)?;
         }
 
         cli::actions::Action::Crontab { verbose, color } => {
             info!(action = "crontab", "Executing crontab parsing");
-            cli::actions::crontab::execute(verbose, color)?
+            cli::actions::crontab::execute(verbose, color)?;
         }
     }
 

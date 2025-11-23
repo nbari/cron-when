@@ -7,12 +7,15 @@ const fn get_verbosity_level(verbose_count: u8) -> Option<tracing::Level> {
         0 => None,
         1 => Some(tracing::Level::INFO),
         2 => Some(tracing::Level::DEBUG),
-        3 => Some(tracing::Level::TRACE),
         _ => Some(tracing::Level::TRACE),
     }
 }
 
 /// Main entry point for the CLI - builds and returns the Action
+///
+/// # Errors
+///
+/// Returns an error if argument parsing, telemetry initialization, or action dispatch fails
 pub fn start() -> Result<Action> {
     // 1. Parse command-line arguments
     let matches = commands::new().get_matches();

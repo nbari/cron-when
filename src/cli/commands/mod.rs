@@ -3,11 +3,14 @@ use clap::{
     builder::styling::{AnsiColor, Effects, Styles},
 };
 
+#[allow(clippy::doc_markdown)]
 pub mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 
 /// Build the CLI command structure
+#[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn new() -> Command {
     let styles = Styles::styled()
         .header(AnsiColor::Yellow.on_default() | Effects::BOLD)
@@ -153,14 +156,20 @@ mod tests {
     fn test_parse_cron_expression() {
         let matches = new().get_matches_from(vec!["cron-when", "*/5 * * * *"]);
         assert!(matches.contains_id("cron"));
-        assert_eq!(matches.get_one::<String>("cron").unwrap(), "*/5 * * * *");
+        assert_eq!(
+            matches.get_one::<String>("cron").map(String::as_str),
+            Some("*/5 * * * *")
+        );
     }
 
     #[test]
     fn test_parse_file_flag() {
         let matches = new().get_matches_from(vec!["cron-when", "-f", "test.crontab"]);
         assert!(matches.contains_id("file"));
-        assert_eq!(matches.get_one::<String>("file").unwrap(), "test.crontab");
+        assert_eq!(
+            matches.get_one::<String>("file").map(String::as_str),
+            Some("test.crontab")
+        );
     }
 
     #[test]

@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-11-23
+
+### Changed
+- **BREAKING**: Migrated from OpenSSL to pure Rustls for all TLS operations
+  - Removed OpenSSL dependency completely
+  - Now uses `rustls` with `webpki-roots` for certificate validation
+  - Binary size unchanged, but eliminates system OpenSSL requirement
+  - Cross-platform builds simplified (no OpenSSL needed on Windows)
+- Removed `[features]` section from `Cargo.toml` (no longer needed)
+- Updated GitHub Actions workflows to remove OpenSSL installation steps
+- Applied strict clippy lints for code quality:
+  - All `pedantic` lints enabled and enforced
+  - Safety-critical lints: `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`
+  - Comprehensive error handling throughout codebase
+  - Added `# Errors` documentation to all public functions returning `Result`
+
+### Dependencies
+- Added `tonic` with `tls-webpki-roots` feature (replaces `tls-native-roots`)
+- Added `opentelemetry-otlp` with `tls-webpki-roots` feature
+- Removed `openssl` dependency
+
+### Technical Details
+For educational purposes, this migration demonstrates:
+- How to migrate from OpenSSL to pure Rust TLS implementation
+- Proper error handling patterns that satisfy strict lints
+- Safe alternatives to panicking code (`.get()` vs `[]`, `try_from` vs `as`)
+- Documentation standards for library code
+
 ## [0.3.0] - 2025-11-10
 
 ### Added

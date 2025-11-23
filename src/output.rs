@@ -1,12 +1,16 @@
 use crate::crontab::CronEntry;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, Utc};
-use colored::*;
+use colored::Colorize;
 use compound_duration::format_dhms;
 use cron_parser::parse;
 use tracing::{debug, info, instrument};
 
 /// Display a single cron expression
+///
+/// # Errors
+///
+/// Returns an error if the cron expression cannot be parsed
 #[instrument(level = "info", skip(comment, command), fields(expression = %expression, verbose = %verbose, color = %color))]
 pub fn display_single(
     expression: &str,
@@ -21,15 +25,16 @@ pub fn display_single(
     }
 
     let now = Utc::now();
-    debug!("Current time: {}", format_datetime(&now));
+    let formatted_now = format_datetime(&now);
+    debug!("Current time: {formatted_now}");
 
     // Parse the cron expression and get next execution time
     let next = parse(expression, &now)
-        .with_context(|| format!("Failed to parse cron expression: '{}'", expression))?;
+        .with_context(|| format!("Failed to parse cron expression: '{expression}'"))?;
 
     // Calculate duration until next execution
     let duration = next.signed_duration_since(now);
-    let seconds = duration.num_seconds().max(0) as u64;
+    let seconds = u64::try_from(duration.num_seconds().max(0)).unwrap_or(0);
 
     info!(
         next_execution = %format_datetime(&next),
@@ -40,9 +45,10 @@ pub fn display_single(
     // Format output
     if let Some(comment_text) = comment {
         if color {
-            println!("{}", format!("# {}", comment_text).bright_black());
+            let formatted = format!("# {comment_text}");
+            println!("{}", formatted.bright_black());
         } else {
-            println!("# {}", comment_text);
+            println!("# {comment_text}");
         }
     }
 
@@ -50,7 +56,7 @@ pub fn display_single(
     if color {
         println!("{} \"{}\"", "Cron:".green().bold(), expression.yellow());
     } else {
-        println!("Cron: \"{}\"", expression);
+        println!("Cron: \"{expression}\"");
     }
 
     // Show command if available
@@ -58,7 +64,7 @@ pub fn display_single(
         if color {
             println!("{} {}", "Command:".red().bold(), cmd.white());
         } else {
-            println!("Command: {}", cmd);
+            println!("Command: {cmd}");
         }
     }
 
@@ -77,6 +83,10 @@ pub fn display_single(
 }
 
 /// Display multiple cron entries
+///
+/// # Errors
+///
+/// Returns an error if any cron expression cannot be parsed
 #[instrument(level = "info", fields(entry_count = entries.len(), verbose = %verbose, color = %color))]
 pub fn display_entries(entries: &[CronEntry], verbose: bool, color: bool) -> Result<()> {
     // Force colors on if explicitly requested, regardless of TTY detection
@@ -107,21 +117,25 @@ pub fn display_entries(entries: &[CronEntry], verbose: bool, color: bool) -> Res
 }
 
 /// Display next N iterations of a cron expression
+///
+/// # Errors
+///
+/// Returns an error if the cron expression cannot be parsed
 #[instrument(level = "info", fields(expression = %expression, count = %count))]
 pub fn display_iterations(expression: &str, count: u32) -> Result<()> {
     let mut current = Utc::now();
 
-    info!("Calculating {} iterations", count);
+    info!("Calculating {count} iterations");
 
-    println!("Expression: {}", expression);
+    println!("Expression: {expression}");
     println!();
 
     for i in 1..=count {
         let next = parse(expression, &current)
-            .with_context(|| format!("Failed to parse cron expression: '{}'", expression))?;
+            .with_context(|| format!("Failed to parse cron expression: '{expression}'"))?;
 
         let duration = next.signed_duration_since(Utc::now());
-        let seconds = duration.num_seconds().max(0) as u64;
+        let seconds = u64::try_from(duration.num_seconds().max(0)).unwrap_or(0);
 
         debug!(iteration = i, next_time = %format_datetime(&next), "Calculated iteration");
 
@@ -141,7 +155,7 @@ pub fn display_iterations(expression: &str, count: u32) -> Result<()> {
     Ok(())
 }
 
-/// Format a DateTime as a human-readable string with both UTC and local timezone
+/// Format a `DateTime` as a human-readable string with both UTC and local timezone
 fn format_datetime(dt: &DateTime<Utc>) -> String {
     let local = dt.with_timezone(&Local);
     format!(
@@ -158,9 +172,10 @@ mod tests {
 
     #[test]
     fn test_format_datetime() {
-        let dt = DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let Ok(dt) = DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z") else {
+            return;
+        };
+        let dt = dt.with_timezone(&Utc);
         let formatted = format_datetime(&dt);
 
         // Check that it contains UTC time in the correct format
@@ -178,29 +193,37 @@ mod tests {
             "Format should have UTC and local time parts"
         );
         assert!(
-            parts[0].ends_with("UTC "),
+            parts.first().is_some_and(|p| p.ends_with("UTC ")),
             "First part should end with 'UTC '"
         );
-        assert!(parts[1].ends_with(')'), "Second part should end with ')'");
+        assert!(
+            parts.get(1).is_some_and(|p| p.ends_with(')')),
+            "Second part should end with ')'"
+        );
     }
 
     #[test]
     fn test_format_datetime_includes_timezone() {
-        let dt = DateTime::parse_from_rfc3339("2024-06-15T14:30:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let Ok(dt) = DateTime::parse_from_rfc3339("2024-06-15T14:30:00Z") else {
+            return;
+        };
+        let dt = dt.with_timezone(&Utc);
         let formatted = format_datetime(&dt);
 
         // Should have the pattern: YYYY-MM-DD HH:MM:SS UTC (HH:MM:SS TZ)
         assert!(formatted.starts_with("2024-06-15 14:30:00 UTC"));
 
         // The local time part should be in parentheses
-        let local_part_start = formatted
-            .find('(')
-            .expect("Should have opening parenthesis");
-        let local_part_end = formatted
-            .find(')')
-            .expect("Should have closing parenthesis");
+        let local_part_start = formatted.find('(');
+        assert!(
+            local_part_start.is_some(),
+            "Should have opening parenthesis"
+        );
+        let local_part_start = local_part_start.unwrap_or_default();
+
+        let local_part_end = formatted.find(')');
+        assert!(local_part_end.is_some(), "Should have closing parenthesis");
+        let local_part_end = local_part_end.unwrap_or_default();
         assert!(local_part_end > local_part_start);
 
         // Extract local time part and verify it has time and timezone
@@ -214,7 +237,7 @@ mod tests {
 
         // Verify time format HH:MM:SS
         assert_eq!(
-            local_parts[0].split(':').count(),
+            local_parts.first().map_or(0, |p| p.split(':').count()),
             3,
             "Time should have hours, minutes, seconds"
         );
@@ -353,7 +376,7 @@ mod tests {
 
         for expr in expressions {
             let result = display_single(expr, false, None, None, false);
-            assert!(result.is_ok(), "Failed to parse cron expression: {}", expr);
+            assert!(result.is_ok(), "Failed to parse cron expression: {expr}");
         }
     }
 
@@ -375,7 +398,7 @@ mod tests {
 
         for expr in invalid_expressions {
             let result = display_single(expr, false, None, None, false);
-            assert!(result.is_err(), "Should have failed for: {}", expr);
+            assert!(result.is_err(), "Should have failed for: {expr}");
         }
     }
 }

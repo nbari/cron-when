@@ -21,16 +21,9 @@ cp deny.toml /path/to/new-project/
 
 ### 2. Required Cargo.toml Configuration
 
-Ensure your `Cargo.toml` has these sections for packaging:
+Ensure your `Cargo.toml` has these sections for RPM/DEB packaging:
 
 ```toml
-[features]
-default = []
-musl = ["openssl/vendored"]
-
-[dependencies]
-openssl = { version = "0.10", optional = true, features = ["vendored"] }
-
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/YOUR-BINARY-NAME", dest = "/usr/bin/YOUR-BINARY-NAME", mode = "0755" },
@@ -44,6 +37,23 @@ depends = ""
 ```
 
 **Note:** The workflows will automatically replace `YOUR-BINARY-NAME` with the actual package name from Cargo.toml.
+
+#### Pure Rust TLS (No OpenSSL Required)
+
+This template uses **rustls** for TLS, requiring no system dependencies:
+
+```toml
+# Example TLS dependencies (if your project needs TLS/HTTPS)
+[dependencies]
+tonic = { version = "0.14", features = ["tls-webpki-roots"] }
+opentelemetry-otlp = { version = "0.31", features = ["tls-webpki-roots"] }
+```
+
+**Benefits:**
+- No OpenSSL installation needed on any platform
+- Static musl builds work out of the box
+- Simplified cross-platform compilation (especially Windows)
+- Same security guarantees as OpenSSL
 
 ### 3. GitHub Secrets Required
 
@@ -256,16 +266,22 @@ This works on all platforms (Linux, macOS, Windows) without installing additiona
 
 ## Troubleshooting
 
-### Build fails on Linux with "musl not found"
+### Build fails on Linux with musl
 
-Make sure `Cargo.toml` has the musl feature:
-```toml
-[features]
-musl = ["openssl/vendored"]
+The workflows install `musl-tools` automatically. If building locally:
 
-[dependencies]
-openssl = { version = "0.10", optional = true, features = ["vendored"] }
+```bash
+# Ubuntu/Debian
+sudo apt-get install musl-tools
+
+# Install musl target
+rustup target add x86_64-unknown-linux-musl
+
+# Build static binary
+cargo build --release --target x86_64-unknown-linux-musl
 ```
+
+**Note:** No OpenSSL or special features needed. If you're using TLS, use rustls with `tls-webpki-roots` feature.
 
 ### Coverage fails
 

@@ -12,6 +12,10 @@ pub struct CronEntry {
 }
 
 /// Parse crontab from current user
+///
+/// # Errors
+///
+/// Returns an error if crontab command execution or parsing fails
 #[instrument(level = "info")]
 pub fn parse_current() -> Result<Vec<CronEntry>> {
     debug!("Executing 'crontab -l' command");
@@ -27,7 +31,7 @@ pub fn parse_current() -> Result<Vec<CronEntry>> {
             info!("No crontab found for current user");
             return Ok(Vec::new());
         }
-        anyhow::bail!("crontab -l failed: {}", stderr);
+        anyhow::bail!("crontab -l failed: {stderr}");
     }
 
     let content =
@@ -40,12 +44,16 @@ pub fn parse_current() -> Result<Vec<CronEntry>> {
 }
 
 /// Parse crontab from file
+///
+/// # Errors
+///
+/// Returns an error if file reading or parsing fails
 #[instrument(level = "info", fields(path = %path.display()))]
 pub fn parse_file(path: &Path) -> Result<Vec<CronEntry>> {
     debug!("Reading crontab file");
 
     let content = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read file: {}", path.display()))?;
+        .with_context(|| format!("Failed to read file: {path}", path = path.display()))?;
 
     let entries = parse_content(&content);
     info!(entry_count = entries.len(), "Parsed crontab file entries");
@@ -100,7 +108,11 @@ fn is_env_var(line: &str) -> bool {
     }
 
     let parts: Vec<&str> = line.splitn(2, '=').collect();
-    if parts.len() == 2 && !parts[0].contains(char::is_whitespace) {
+    if parts.len() == 2
+        && parts
+            .first()
+            .is_some_and(|p| !p.contains(char::is_whitespace))
+    {
         return true;
     }
 
@@ -112,8 +124,8 @@ fn extract_cron_entry(line: &str) -> Option<(String, Option<String>)> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() >= 6 {
         // Standard cron: 5 time fields + command
-        let expression = parts[0..5].join(" ");
-        let command = Some(parts[5..].join(" "));
+        let expression = parts.get(0..5)?.join(" ");
+        let command = Some(parts.get(5..)?.join(" "));
         Some((expression, command))
     } else {
         None
@@ -123,7 +135,7 @@ fn extract_cron_entry(line: &str) -> Option<(String, Option<String>)> {
 /// Extract comment from previous line if it exists
 fn extract_previous_comment(lines: &[&str], current_index: usize) -> Option<String> {
     if current_index > 0 {
-        let prev_line = lines[current_index - 1].trim();
+        let prev_line = lines.get(current_index - 1)?.trim();
         if prev_line.starts_with('#') {
             return Some(prev_line.trim_start_matches('#').trim().to_string());
         }
@@ -137,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_parse_content() {
-        let content = r#"
+        let content = r"
 # Run every 5 minutes
 */5 * * * * /usr/bin/script1.sh
 
@@ -150,34 +162,55 @@ SHELL=/bin/bash
 # Another comment without entry
 
 30 2 * * 1 /usr/bin/weekly.sh
-"#;
+";
 
         let entries = parse_content(content);
         assert_eq!(entries.len(), 3);
 
-        assert_eq!(entries[0].expression, "*/5 * * * *");
-        assert_eq!(entries[0].command, Some("/usr/bin/script1.sh".to_string()));
-        assert_eq!(entries[0].comment, Some("Run every 5 minutes".to_string()));
-
-        assert_eq!(entries[1].expression, "0 0 * * *");
-        assert_eq!(entries[1].command, Some("/usr/bin/backup.sh".to_string()));
         assert_eq!(
-            entries[1].comment,
-            Some("Daily backup at midnight".to_string())
+            entries.first().map(|e| e.expression.as_str()),
+            Some("*/5 * * * *")
+        );
+        assert_eq!(
+            entries.first().and_then(|e| e.command.as_deref()),
+            Some("/usr/bin/script1.sh")
+        );
+        assert_eq!(
+            entries.first().and_then(|e| e.comment.as_deref()),
+            Some("Run every 5 minutes")
         );
 
-        assert_eq!(entries[2].expression, "30 2 * * 1");
-        assert_eq!(entries[2].command, Some("/usr/bin/weekly.sh".to_string()));
-        assert_eq!(entries[2].comment, None);
+        assert_eq!(
+            entries.get(1).map(|e| e.expression.as_str()),
+            Some("0 0 * * *")
+        );
+        assert_eq!(
+            entries.get(1).and_then(|e| e.command.as_deref()),
+            Some("/usr/bin/backup.sh")
+        );
+        assert_eq!(
+            entries.get(1).and_then(|e| e.comment.as_deref()),
+            Some("Daily backup at midnight")
+        );
+
+        assert_eq!(
+            entries.get(2).map(|e| e.expression.as_str()),
+            Some("30 2 * * 1")
+        );
+        assert_eq!(
+            entries.get(2).and_then(|e| e.command.as_deref()),
+            Some("/usr/bin/weekly.sh")
+        );
+        assert_eq!(entries.get(2).and_then(|e| e.comment.as_deref()), None);
     }
 
     #[test]
     fn test_parse_content_empty() {
-        let content = r#"
+        let content = r"
 # Just comments
 # No actual entries
 SHELL=/bin/bash
-"#;
+";
 
         let entries = parse_content(content);
         assert_eq!(entries.len(), 0);

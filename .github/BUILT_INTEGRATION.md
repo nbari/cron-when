@@ -26,11 +26,16 @@ The `git2` feature enables git information extraction.
 
 ```rust
 fn main() {
-    built::write_built_file().expect("Failed to acquire build-time information");
+    if let Err(e) = built::write_built_file() {
+        eprintln!("Failed to acquire build-time information: {e}");
+        std::process::exit(1);
+    }
 }
 ```
 
 This generates `target/{profile}/build/cron-when-*/out/built.rs` at compile time.
+
+**Note:** We avoid `.expect()` to comply with strict clippy lints (`expect_used = "deny"`).
 
 ### 3. Usage in CLI (`src/cli/commands/mod.rs`)
 
@@ -107,9 +112,14 @@ This pattern works in any Rust project:
 2. Create `build.rs`:
    ```rust
    fn main() {
-       built::write_built_file().expect("Failed to acquire build info");
+       if let Err(e) = built::write_built_file() {
+           eprintln!("Failed to acquire build info: {e}");
+           std::process::exit(1);
+       }
    }
    ```
+
+   **Note:** Avoid `.expect()` if using strict clippy lints.
 
 3. Use in your code:
    ```rust
