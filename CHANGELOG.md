@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `tonic` with `tls-webpki-roots` feature (replaces `tls-native-roots`)
 - Added `opentelemetry-otlp` with `tls-webpki-roots` feature
 - Removed `openssl` dependency
+- Added `CDLA-Permissive-2.0` to allowed licenses (required by `webpki-roots`)
 
 ### Technical Details
 For educational purposes, this migration demonstrates:

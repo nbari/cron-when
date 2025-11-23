@@ -16,6 +16,7 @@ allow = [
     "ISC",
     "MPL-2.0",
     "Unicode-3.0",
+    "CDLA-Permissive-2.0",  # Used by webpki-roots (Mozilla's root certificates)
 ]
 confidence-threshold = 0.8
 
