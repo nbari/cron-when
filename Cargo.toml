@@ -75,7 +75,7 @@ depends = ""
 built = { version = "0.8.0", features = ["git2"] }
 
 [dev-dependencies]
-criterion = "0.7"
+criterion = "0.8"
 
 [[bench]]
 name = "parse_benchmark"

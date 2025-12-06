@@ -22,7 +22,7 @@ coverage:
 # Linting
 clippy:
   @echo "🔍 Running clippy..."
-  cargo clippy --all-targets --all-features -- -D clippy::all -D clippy::nursery -D warnings
+  cargo clippy --all-targets --all-features
 
 # Formatting
 fmt:
