@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-03-31
+
+### Added
+- Support for cron aliases: `@reboot`, `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`, `@midnight`, `@hourly`.
+- Multi-line comment support: The parser now collects all preceding comment lines for a cron job, providing better context.
+- Inline comment support: Cron entries can now have trailing comments when `#` starts an unquoted, whitespace-delimited comment (e.g., `0 0 * * * command # backup`).
+- Generic output writers: Refactored output functions to support `std::io::Write`, enabling easier testing and potential redirection to different targets.
+
+### Changed
+- Refactored CLI argument definitions: Extracted into helper functions to satisfy strict code length lints.
+- Modernized internal state management: Replaced `once_cell::sync::OnceCell` with the standard library's `std::sync::OnceLock` (modern Rust/2024 edition).
+- Improved parsing robustness: Switched to safer `.get()` and `.first()` methods to comply with strict `indexing_slicing` lints.
+- Simplified environment variable detection: Now uses `split_once` for cleaner logic.
+
+### Dependencies
+- Removed `once_cell` dependency.
+
+### Technical Details
+- Added `_with_writer` variants to the output module for testability.
+- Updated `src/crontab.rs` with stricter alias validation, safer inline comment parsing, and broader unit test coverage.
+- Satisfied all strict `clippy` lints including `too_many_lines`, `indexing_slicing`, and `unwrap_used`.
+
 ## [0.4.0] - 2025-11-23
 
 ### Changed

@@ -2,6 +2,7 @@ use crate::cli::actions::Action;
 use anyhow::Result;
 use clap::ArgMatches;
 use std::env;
+use std::io::{IsTerminal, stdout};
 use std::path::PathBuf;
 
 /// Convert `ArgMatches` into an Action
@@ -16,11 +17,23 @@ pub fn handler(matches: &ArgMatches) -> Result<Action> {
     // Extract next count if provided
     let next = matches.get_one::<u32>("next").copied();
 
-    // Extract color flag - check CLI flag first, then environment variable
-    let color = matches.get_flag("color")
-        || env::var("CRON_WHEN_COLOR")
-            .map(|v| v == "1")
-            .unwrap_or(false);
+    // Determine if color should be enabled based on hierarchy:
+    // 1. --no-color flag (highest priority)
+    // 2. --color flag
+    // 3. NO_COLOR environment variable (https://no-color.org/)
+    // 4. CLICOLOR_FORCE environment variable
+    // 5. stdout is a terminal (auto-detection)
+    let color = if matches.get_flag("no-color") {
+        false
+    } else if matches.get_flag("color") {
+        true
+    } else if env::var_os("NO_COLOR").is_some() {
+        false
+    } else if env::var_os("CLICOLOR_FORCE").is_some_and(|v| v != "0") {
+        true
+    } else {
+        stdout().is_terminal()
+    };
 
     // Check which mode was requested
     if matches.get_flag("crontab") {
@@ -50,6 +63,15 @@ pub fn handler(matches: &ArgMatches) -> Result<Action> {
 mod tests {
     use super::*;
     use crate::cli::commands;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn env_guard() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[test]
     fn test_handler_single() {
@@ -77,13 +99,7 @@ mod tests {
         let action = handler(&matches);
         assert!(action.is_ok());
         if let Ok(action) = action {
-            assert!(matches!(
-                action,
-                Action::Crontab {
-                    verbose: false,
-                    color: false
-                }
-            ));
+            assert!(matches!(action, Action::Crontab { verbose: false, .. }));
         }
     }
 
@@ -112,6 +128,84 @@ mod tests {
         assert!(action.is_ok());
         if let Ok(Action::Single { next, .. }) = action {
             assert_eq!(next, Some(5));
+        }
+    }
+
+    #[test]
+    #[allow(clippy::undocumented_unsafe_blocks)]
+    fn test_handler_no_color_env() {
+        let _guard = env_guard();
+        unsafe {
+            env::set_var("NO_COLOR", "1");
+        }
+        let matches = commands::new().get_matches_from(vec!["cron-when", "*/5 * * * *"]);
+        let action = handler(&matches);
+        assert!(action.is_ok());
+        if let Ok(Action::Single { color, .. }) = action {
+            // Should be false because of NO_COLOR
+            assert!(!color);
+        }
+        unsafe {
+            env::remove_var("NO_COLOR");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::undocumented_unsafe_blocks)]
+    fn test_handler_empty_no_color_env_disables_color() {
+        let _guard = env_guard();
+        unsafe {
+            env::set_var("NO_COLOR", "");
+            env::set_var("CLICOLOR_FORCE", "1");
+        }
+        let matches = commands::new().get_matches_from(vec!["cron-when", "*/5 * * * *"]);
+        let action = handler(&matches);
+        assert!(action.is_ok());
+        if let Ok(Action::Single { color, .. }) = action {
+            assert!(!color);
+        }
+        unsafe {
+            env::remove_var("NO_COLOR");
+            env::remove_var("CLICOLOR_FORCE");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::undocumented_unsafe_blocks)]
+    fn test_handler_color_flag_overrides_no_color_env() {
+        let _guard = env_guard();
+        unsafe {
+            env::set_var("NO_COLOR", "1");
+        }
+        let matches = commands::new().get_matches_from(vec!["cron-when", "--color", "*/5 * * * *"]);
+        let action = handler(&matches);
+        assert!(action.is_ok());
+        if let Ok(Action::Single { color, .. }) = action {
+            // Flag should override environment variable
+            assert!(color);
+        }
+        unsafe {
+            env::remove_var("NO_COLOR");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::undocumented_unsafe_blocks)]
+    fn test_handler_no_color_flag_overrides_all() {
+        let _guard = env_guard();
+        unsafe {
+            env::set_var("CLICOLOR_FORCE", "1");
+        }
+        let matches =
+            commands::new().get_matches_from(vec!["cron-when", "--no-color", "*/5 * * * *"]);
+        let action = handler(&matches);
+        assert!(action.is_ok());
+        if let Ok(Action::Single { color, .. }) = action {
+            // --no-color flag should override CLICOLOR_FORCE
+            assert!(!color);
+        }
+        unsafe {
+            env::remove_var("CLICOLOR_FORCE");
         }
     }
 }
