@@ -51,7 +51,7 @@ pub fn display_single_with_writer(
     let schedule = normalized_schedule_expression(expression)
         .with_context(|| format!("Failed to parse cron expression: '{expression}'"))?;
 
-    if let ScheduleExpression::Reboot = schedule {
+    if schedule == ScheduleExpression::Reboot {
         return display_reboot(writer, expression, comment, command, color);
     }
 
@@ -250,7 +250,7 @@ pub fn display_iterations_with_writer(
     let schedule = normalized_schedule_expression(expression)
         .with_context(|| format!("Failed to parse cron expression: '{expression}'"))?;
 
-    if let ScheduleExpression::Reboot = schedule {
+    if schedule == ScheduleExpression::Reboot {
         writeln!(writer, "Expression: {expression}")?;
         writeln!(writer)?;
         writeln!(writer, "  1. System Startup (Runs once at boot)")?;

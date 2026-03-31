@@ -123,11 +123,11 @@ fn parse_content(content: &str) -> Vec<CronEntry> {
                 command: Some(command),
                 comment,
             });
-            current_comments.clear();
         } else {
             warn!(line = trimmed, "Could not parse as cron expression");
-            current_comments.clear();
         }
+
+        current_comments.clear();
     }
 
     entries
