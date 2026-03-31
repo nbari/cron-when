@@ -32,3 +32,17 @@ pub fn start() -> Result<Action> {
     // 5. Return the action for execution by the binary
     Ok(action)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_verbosity_level() {
+        assert_eq!(get_verbosity_level(0), None);
+        assert_eq!(get_verbosity_level(1), Some(tracing::Level::INFO));
+        assert_eq!(get_verbosity_level(2), Some(tracing::Level::DEBUG));
+        assert_eq!(get_verbosity_level(3), Some(tracing::Level::TRACE));
+        assert_eq!(get_verbosity_level(4), Some(tracing::Level::TRACE));
+    }
+}

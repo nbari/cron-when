@@ -1,9 +1,10 @@
-use crate::crontab::CronEntry;
+use crate::crontab::{CronEntry, ScheduleExpression, normalized_schedule_expression};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, Utc};
 use colored::Colorize;
 use compound_duration::format_dhms;
 use cron_parser::parse;
+use std::io::Write;
 use tracing::{debug, info, instrument};
 
 /// Display a single cron expression
@@ -19,17 +20,51 @@ pub fn display_single(
     command: Option<&str>,
     color: bool,
 ) -> Result<()> {
+    display_single_with_writer(
+        &mut std::io::stdout(),
+        expression,
+        verbose,
+        comment,
+        command,
+        color,
+    )
+}
+
+/// Display a single cron expression to a specific writer
+///
+/// # Errors
+///
+/// Returns an error if the cron expression cannot be parsed or writing fails
+pub fn display_single_with_writer(
+    writer: &mut impl Write,
+    expression: &str,
+    _verbose: bool,
+    comment: Option<&str>,
+    command: Option<&str>,
+    color: bool,
+) -> Result<()> {
     // Force colors on if explicitly requested, regardless of TTY detection
     if color {
         colored::control::set_override(true);
+    }
+
+    let schedule = normalized_schedule_expression(expression)
+        .with_context(|| format!("Failed to parse cron expression: '{expression}'"))?;
+
+    if let ScheduleExpression::Reboot = schedule {
+        return display_reboot(writer, expression, comment, command, color);
     }
 
     let now = Utc::now();
     let formatted_now = format_datetime(&now);
     debug!("Current time: {formatted_now}");
 
+    let ScheduleExpression::Standard(schedule_expression) = schedule else {
+        unreachable!("reboot expressions return early");
+    };
+
     // Parse the cron expression and get next execution time
-    let next = parse(expression, &now)
+    let next = parse(schedule_expression, &now)
         .with_context(|| format!("Failed to parse cron expression: '{expression}'"))?;
 
     // Calculate duration until next execution
@@ -43,41 +78,102 @@ pub fn display_single(
     );
 
     // Format output
-    if let Some(comment_text) = comment {
-        if color {
-            let formatted = format!("# {comment_text}");
-            println!("{}", formatted.bright_black());
-        } else {
-            println!("# {comment_text}");
-        }
-    }
+    write_comment(writer, comment, color)?;
 
     // Always show cron expression with quotes for clarity
     if color {
-        println!("{} \"{}\"", "Cron:".green().bold(), expression.yellow());
+        writeln!(
+            writer,
+            "{} \"{}\"",
+            "Cron:".green().bold(),
+            expression.yellow()
+        )?;
     } else {
-        println!("Cron: \"{expression}\"");
+        writeln!(writer, "Cron: \"{expression}\"")?;
     }
 
     // Show command if available
     if let Some(cmd) = command {
         if color {
-            println!("{} {}", "Command:".red().bold(), cmd.white());
+            writeln!(writer, "{} {}", "Command:".red().bold(), cmd.white())?;
         } else {
-            println!("Command: {cmd}");
+            writeln!(writer, "Command: {cmd}")?;
         }
     }
 
     if color {
-        println!("{} {}", "Next:".blue().bold(), format_datetime(&next));
-        println!("{} {}", "Left:".yellow().bold(), format_dhms(seconds));
+        writeln!(
+            writer,
+            "{} {}",
+            "Next:".blue().bold(),
+            format_datetime(&next)
+        )?;
+        writeln!(
+            writer,
+            "{} {}",
+            "Left:".yellow().bold(),
+            format_dhms(seconds)
+        )?;
     } else {
-        println!("Next: {}", format_datetime(&next));
-        println!("Left: {}", format_dhms(seconds));
+        writeln!(writer, "Next: {}", format_datetime(&next))?;
+        writeln!(writer, "Left: {}", format_dhms(seconds))?;
     }
 
     // Add separator for multiple entries
-    println!();
+    writeln!(writer)?;
+
+    Ok(())
+}
+
+/// Helper to display @reboot entries
+fn display_reboot(
+    writer: &mut impl Write,
+    expression: &str,
+    comment: Option<&str>,
+    command: Option<&str>,
+    color: bool,
+) -> Result<()> {
+    write_comment(writer, comment, color)?;
+    if color {
+        writeln!(
+            writer,
+            "{} \"{}\"",
+            "Cron:".green().bold(),
+            expression.yellow()
+        )?;
+    } else {
+        writeln!(writer, "Cron: \"{expression}\"")?;
+    }
+    if let Some(cmd) = command {
+        if color {
+            writeln!(writer, "{} {}", "Command:".red().bold(), cmd.white())?;
+        } else {
+            writeln!(writer, "Command: {cmd}")?;
+        }
+    }
+    if color {
+        writeln!(writer, "{} System Startup", "Next:".blue().bold())?;
+        writeln!(writer, "{} N/A", "Left:".yellow().bold())?;
+    } else {
+        writeln!(writer, "Next: System Startup")?;
+        writeln!(writer, "Left: N/A")?;
+    }
+    writeln!(writer)?;
+    Ok(())
+}
+
+fn write_comment(writer: &mut impl Write, comment: Option<&str>, color: bool) -> Result<()> {
+    let Some(comment) = comment else {
+        return Ok(());
+    };
+
+    for line in comment.lines() {
+        if color {
+            writeln!(writer, "{}", format!("# {line}").bright_black())?;
+        } else {
+            writeln!(writer, "# {line}")?;
+        }
+    }
 
     Ok(())
 }
@@ -89,6 +185,20 @@ pub fn display_single(
 /// Returns an error if any cron expression cannot be parsed
 #[instrument(level = "info", fields(entry_count = entries.len(), verbose = %verbose, color = %color))]
 pub fn display_entries(entries: &[CronEntry], verbose: bool, color: bool) -> Result<()> {
+    display_entries_with_writer(&mut std::io::stdout(), entries, verbose, color)
+}
+
+/// Display multiple cron entries to a specific writer
+///
+/// # Errors
+///
+/// Returns an error if any cron expression cannot be parsed or writing fails
+pub fn display_entries_with_writer(
+    writer: &mut impl Write,
+    entries: &[CronEntry],
+    verbose: bool,
+    color: bool,
+) -> Result<()> {
     // Force colors on if explicitly requested, regardless of TTY detection
     if color {
         colored::control::set_override(true);
@@ -96,7 +206,7 @@ pub fn display_entries(entries: &[CronEntry], verbose: bool, color: bool) -> Res
 
     if entries.is_empty() {
         info!("No cron entries to display");
-        println!("No valid cron entries found");
+        writeln!(writer, "No valid cron entries found")?;
         return Ok(());
     }
 
@@ -104,7 +214,8 @@ pub fn display_entries(entries: &[CronEntry], verbose: bool, color: bool) -> Res
 
     for (i, entry) in entries.iter().enumerate() {
         debug!(index = i, expression = %entry.expression, "Processing entry");
-        display_single(
+        display_single_with_writer(
+            writer,
             &entry.expression,
             verbose,
             entry.comment.as_deref(),
@@ -123,15 +234,42 @@ pub fn display_entries(entries: &[CronEntry], verbose: bool, color: bool) -> Res
 /// Returns an error if the cron expression cannot be parsed
 #[instrument(level = "info", fields(expression = %expression, count = %count))]
 pub fn display_iterations(expression: &str, count: u32) -> Result<()> {
+    display_iterations_with_writer(&mut std::io::stdout(), expression, count)
+}
+
+/// Display next N iterations of a cron expression to a specific writer
+///
+/// # Errors
+///
+/// Returns an error if the cron expression cannot be parsed or writing fails
+pub fn display_iterations_with_writer(
+    writer: &mut impl Write,
+    expression: &str,
+    count: u32,
+) -> Result<()> {
+    let schedule = normalized_schedule_expression(expression)
+        .with_context(|| format!("Failed to parse cron expression: '{expression}'"))?;
+
+    if let ScheduleExpression::Reboot = schedule {
+        writeln!(writer, "Expression: {expression}")?;
+        writeln!(writer)?;
+        writeln!(writer, "  1. System Startup (Runs once at boot)")?;
+        return Ok(());
+    }
+
+    let ScheduleExpression::Standard(schedule_expression) = schedule else {
+        unreachable!("reboot expressions return early");
+    };
+
     let mut current = Utc::now();
 
     info!("Calculating {count} iterations");
 
-    println!("Expression: {expression}");
-    println!();
+    writeln!(writer, "Expression: {expression}")?;
+    writeln!(writer)?;
 
     for i in 1..=count {
-        let next = parse(expression, &current)
+        let next = parse(schedule_expression, &current)
             .with_context(|| format!("Failed to parse cron expression: '{expression}'"))?;
 
         let duration = next.signed_duration_since(Utc::now());
@@ -139,12 +277,13 @@ pub fn display_iterations(expression: &str, count: u32) -> Result<()> {
 
         debug!(iteration = i, next_time = %format_datetime(&next), "Calculated iteration");
 
-        println!(
+        writeln!(
+            writer,
             "{:3}. {} ({})",
             i,
             format_datetime(&next),
             format_dhms(seconds)
-        );
+        )?;
 
         // Update current time for next iteration
         current = next;
@@ -241,6 +380,73 @@ mod tests {
             3,
             "Time should have hours, minutes, seconds"
         );
+    }
+
+    #[test]
+    fn test_display_single_with_writer() -> Result<()> {
+        let mut buf = Vec::new();
+        display_single_with_writer(
+            &mut buf,
+            "*/5 * * * *",
+            false,
+            Some("test comment"),
+            Some("test command"),
+            false,
+        )?;
+
+        let output = String::from_utf8(buf).context("Failed to parse output as UTF-8")?;
+        assert!(output.contains("# test comment"));
+        assert!(output.contains("Cron: \"*/5 * * * *\""));
+        assert!(output.contains("Command: test command"));
+        assert!(output.contains("Next:"));
+        assert!(output.contains("Left:"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_display_single_preserves_alias_in_output() -> Result<()> {
+        let mut buf = Vec::new();
+        display_single_with_writer(&mut buf, "@daily", false, None, Some("/bin/true"), false)?;
+
+        let output = String::from_utf8(buf).context("Failed to parse output as UTF-8")?;
+        assert!(output.contains("Cron: \"@daily\""));
+        assert!(output.contains("Command: /bin/true"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_display_single_renders_multiline_comments_line_by_line() -> Result<()> {
+        let mut buf = Vec::new();
+        display_single_with_writer(
+            &mut buf,
+            "0 * * * *",
+            false,
+            Some("first\nsecond"),
+            None,
+            false,
+        )?;
+
+        let output = String::from_utf8(buf).context("Failed to parse output as UTF-8")?;
+        assert!(output.contains("# first\n# second\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_display_entries_with_writer_preserves_alias_and_comment_formatting() -> Result<()> {
+        let entries = vec![CronEntry {
+            expression: "@hourly".to_string(),
+            command: Some("/usr/bin/backup.sh".to_string()),
+            comment: Some("first\nsecond".to_string()),
+        }];
+
+        let mut buf = Vec::new();
+        display_entries_with_writer(&mut buf, &entries, false, false)?;
+
+        let output = String::from_utf8(buf).context("Failed to parse output as UTF-8")?;
+        assert!(output.contains("# first\n# second\n"));
+        assert!(output.contains("Cron: \"@hourly\""));
+        assert!(output.contains("Command: /usr/bin/backup.sh"));
+        Ok(())
     }
 
     #[test]
@@ -347,6 +553,28 @@ mod tests {
     }
 
     #[test]
+    fn test_display_iterations_reboot() -> Result<()> {
+        let mut buf = Vec::new();
+        display_iterations_with_writer(&mut buf, "@reboot", 5)?;
+
+        let output = String::from_utf8(buf).context("Failed to parse output as UTF-8")?;
+        assert!(output.contains("Expression: @reboot"));
+        assert!(output.contains("System Startup"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_display_iterations_preserve_alias_in_header() -> Result<()> {
+        let mut buf = Vec::new();
+        display_iterations_with_writer(&mut buf, "@daily", 1)?;
+
+        let output = String::from_utf8(buf).context("Failed to parse output as UTF-8")?;
+        assert!(output.contains("Expression: @daily"));
+        assert!(output.contains("  1. "));
+        Ok(())
+    }
+
+    #[test]
     fn test_display_iterations_invalid() {
         let result = display_iterations("not valid", 5);
         assert!(result.is_err());
@@ -372,6 +600,9 @@ mod tests {
             "30 2 * * *",     // Daily at 2:30am
             "0 */2 * * *",    // Every 2 hours
             "0 0 1 1 *",      // Yearly on Jan 1st
+            "@daily",         // Daily alias
+            "@hourly",        // Hourly alias
+            "@reboot",        // Reboot alias
         ];
 
         for expr in expressions {
