@@ -18,3 +18,14 @@ pub fn execute(expression: &str, verbose: bool, next: Option<u32>, color: bool) 
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_execute_single_invalid() {
+        let result = execute("invalid", false, None, false);
+        assert!(result.is_err());
+    }
+}

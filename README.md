@@ -134,6 +134,22 @@ Show the cron expression along with the output:
 cron-when -v "*/5 * * * *"
 ```
 
+### Color Output
+
+`cron-when` supports colored output for better readability. By default, color is enabled when the output is a terminal (TTY).
+
+- Force color: `cron-when --color "*/5 * * * *"` or `-c`
+- Disable color: `cron-when --no-color "*/5 * * * *"`
+
+This tool respects the [NO_COLOR](https://no-color.org/) standard. If the `NO_COLOR` environment variable is present, even as an empty value, color output will be disabled by default unless explicitly overridden by the `--color` flag.
+
+The detection hierarchy is:
+1.  `--no-color` flag (always disable)
+2.  `--color` flag (always enable)
+3.  `NO_COLOR` environment variable (disable if present)
+4.  `CLICOLOR_FORCE` environment variable (enable if set and not "0")
+5.  Auto-detection (enable if output is a terminal)
+
 ### Show next N occurrences
 
 Display the next N times a cron expression will run:

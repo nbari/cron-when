@@ -50,7 +50,6 @@
 
 use anyhow::{Result, anyhow};
 use base64::{Engine, engine::general_purpose};
-use once_cell::sync::OnceCell;
 use opentelemetry::propagation::TextMapCompositePropagator;
 use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
 use opentelemetry_otlp::{Compression, WithExportConfig, WithTonicConfig};
@@ -59,6 +58,7 @@ use opentelemetry_sdk::{
     propagation::{BaggagePropagator, TraceContextPropagator},
     trace::{SdkTracerProvider, Tracer},
 };
+use std::sync::OnceLock;
 use std::{collections::HashMap, env::var, time::Duration};
 use tonic::{
     metadata::{Ascii, Binary, MetadataKey, MetadataMap, MetadataValue},
@@ -69,7 +69,7 @@ use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 use ulid::Ulid;
 
 /// Global tracer provider (initialized once)
-static TRACER_PROVIDER: OnceCell<SdkTracerProvider> = OnceCell::new();
+static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
 fn parse_headers_env(headers_str: &str) -> HashMap<String, String> {
     headers_str
