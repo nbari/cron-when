@@ -1,6 +1,6 @@
 [package]
 name = "cron-when"
-version = "0.5.0"
+version = "0.5.1"
 authors = ["Nicolas Embriz <nbari@tequila.io>"]
 description = "A CLI tool to parse cron expressions and display next execution times with human-readable durations"
 documentation = "https://docs.rs/cron-when/latest/cron_when/"
