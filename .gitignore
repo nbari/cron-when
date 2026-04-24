@@ -20,4 +20,4 @@ flycheck*.rs
 .cursor/
 .idea/
 .vscode/
-.codexrc
+.codex
