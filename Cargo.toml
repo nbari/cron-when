@@ -71,7 +71,7 @@ assets = [
 depends = ""
 
 [build-dependencies]
-built = { version = "0.8.0", features = ["git2"] }
+built = { version = "0.8.1", features = ["git2"] }
 
 [dev-dependencies]
 criterion = "0.8"
