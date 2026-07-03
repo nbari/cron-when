@@ -17,7 +17,7 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Cache cargo-audit
         uses: actions/cache@v6
@@ -38,7 +38,7 @@ jobs:
     name: Cargo Deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Cargo Deny
         uses: EmbarkStudios/cargo-deny-action@v2
