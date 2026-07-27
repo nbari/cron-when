@@ -42,7 +42,7 @@ large_stack_arrays = "deny"
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 chrono = "0.4"
 clap = { version = "4.6", features = ["derive"] }
 colored = "3"
