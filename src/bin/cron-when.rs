@@ -41,10 +41,13 @@ async fn main() -> Result<()> {
     // Gracefully shutdown tracer provider if initialized
     // Note: This may timeout if OTLP endpoint is slow/unavailable,
     // but spans should still be sent
-    cli::telemetry::shutdown_tracer();
-
-    // Give a brief moment for final async operations
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    #[cfg(feature = "telemetry")]
+    {
+        if cli::telemetry::shutdown_tracer() {
+            // Give final asynchronous OTLP operations a brief moment to complete.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
 
     Ok(())
 }

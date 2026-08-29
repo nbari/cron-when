@@ -14,7 +14,7 @@ A CLI cron expression parser that shows the next execution time and duration unt
 
 **This project is intentionally over-engineered to serve as a learning template:**
 
-- Demonstrates production-grade observability patterns (OpenTelemetry with gRPC/TLS)
+- Demonstrates compile-time feature gating plus runtime configuration
 - Shows how to integrate distributed tracing in Rust CLIs
 - Exhibits modular CLI architecture with separation of concerns
 - Uses pure Rust TLS implementation (rustls + webpki-roots, no OpenSSL)
@@ -29,8 +29,10 @@ A CLI cron expression parser that shows the next execution time and duration unt
   - Simplified cross-platform builds (especially Windows)
   - Same security guarantees, fully portable
 
-- **OpenTelemetry Integration**: Adds ~15-20 dependencies and 2-3 MB to binary
-  - **Zero runtime cost when disabled** (no `OTEL_EXPORTER_OTLP_ENDPOINT` set)
+- **OpenTelemetry Integration**: Compile-time optional through the `telemetry` feature
+  - The default build omits the OTLP/gRPC/TLS dependency stack
+  - Enabling the Cargo feature requires a rebuild; it is not a live feature toggle
+  - When compiled in, `OTEL_EXPORTER_OTLP_ENDPOINT` activates export at process startup
   - Multi-backend support (Jaeger, Honeycomb, Grafana, AWS X-Ray, etc.)
   - Uses gRPC over TLS with rustls for secure trace export
 
@@ -91,12 +93,18 @@ See [`.github/TEMPLATE.md`](.github/TEMPLATE.md) for detailed instructions.
 
 ```bash
 cargo install --path .
+
+# Include the optional OpenTelemetry exporter
+cargo install --path . --features telemetry
 ```
 
 ### From crates.io
 
 ```bash
 cargo install cron-when
+
+# Include the optional OpenTelemetry exporter
+cargo install cron-when --features telemetry
 ```
 
 ### Building static binaries (Linux)
@@ -271,13 +279,63 @@ Options:
 
 ## Observability & Tracing
 
-This CLI includes OpenTelemetry support for distributed tracing and observability.
+This CLI offers OpenTelemetry support for distributed tracing and observability
+through the optional `telemetry` Cargo feature. The default build remains a
+smaller cron utility without the OTLP/gRPC/TLS dependency stack.
 
-> **📚 Educational Note:** This is intentionally over-engineered! A simple cron parser doesn't "need" distributed tracing. However, this project demonstrates production-grade observability patterns that you can learn from and apply to your own projects. See [CLI_ARCHITECTURE.md](CLI_ARCHITECTURE.md#educational-note-opentelemetry-in-a-tiny-cli) for detailed discussion.
+> **📚 Educational Note:** This is intentionally over-engineered! A simple cron parser doesn't "need" distributed tracing. However, this project demonstrates production-grade observability patterns that you can learn from and apply to your own projects. See the [compile-time versus runtime design](CLI_ARCHITECTURE.md#compile-time-feature-vs-runtime-configuration) for a detailed discussion.
+
+### Two Controls, Two Purposes
+
+This example deliberately separates compile-time capability from runtime
+configuration:
+
+| Control | What it does | Requires rebuilding? | When evaluated? |
+| --- | --- | --- | --- |
+| Cargo feature: `telemetry` | Includes the OpenTelemetry/OTLP implementation and its optional dependencies | Yes | At compile time |
+| Environment: `OTEL_EXPORTER_OTLP_ENDPOINT` | Creates an OTLP exporter in a telemetry-enabled binary | No | Once, at process startup |
+
+Cargo calls `telemetry` a *feature*. It is also commonly described as a
+compile-time feature flag, but it is not the same as a runtime release toggle:
+changing it produces a different binary and therefore requires rebuilding and
+redeploying that binary.
+
+The endpoint is runtime configuration. Adding or removing it does not require
+a new binary, but this CLI reads it only during startup, so the process must be
+restarted after the environment changes. It is not a live, remotely controlled
+rollout flag.
+
+The resulting behavior is:
+
+| Binary | Endpoint set? | Result |
+| --- | --- | --- |
+| Default build | Either | Local structured logging only; OTLP code is not present |
+| `--features telemetry` | No | Local structured logging only; no exporter is created |
+| `--features telemetry` | Yes | Local structured logging plus OTLP trace export |
+
+This is a good fit for an optional, dependency-heavy capability. Use Cargo
+features to control what a binary can do. Use runtime configuration for values
+that vary between environments. If a project needs instant rollouts, per-user
+targeting, or a kill switch without restarting processes, use a dedicated
+runtime feature-management mechanism instead.
+
+CI checks and tests both feature sets, then performs cross-platform release
+builds for both configurations. This catches code that compiles only when a
+feature is enabled—or only when it is absent. Published release artifacts still
+use the documented default feature set unless the release workflow explicitly
+enables another feature.
 
 ### Enabling Traces
 
-Traces are automatically sent when the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable is set:
+First build or install a binary that contains telemetry support:
+
+```bash
+cargo build --release --features telemetry
+# or
+cargo install cron-when --features telemetry
+```
+
+Then activate its OTLP exporter at startup by providing an endpoint:
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
@@ -373,18 +431,104 @@ See [CLI_ARCHITECTURE.md](CLI_ARCHITECTURE.md) for details on why this happens a
 
 ## Development
 
+### Development container
+
+The repository includes a development container based on the setup used by
+`s3m`, updated to the current Dev Container schema. It provides Rust, Clippy,
+rustfmt, the MUSL target, the Cargo tools used by the `just` recipes, SOPS,
+age, zsh, rust-analyzer, and debugging extensions.
+
+In VS Code, install the **Dev Containers** extension, open this repository, and
+select **Dev Containers: Reopen in Container**. Other tools implementing the
+[Development Container Specification](https://containers.dev/) can use the
+same `.devcontainer/devcontainer.json` file.
+
+The container uses the non-root `vscode` user. Run the fast validation suite
+after creation:
+
+```bash
+just test
+```
+
+For Fedora/Podman compatibility, the container disables SELinux label
+separation for this development container. This lets the workspace and the
+read-only staged secret be mounted without relabeling either host path. It does
+not make the container privileged, but derived projects should keep this option
+only when their container provider requires it.
+
+`just full-test` additionally requires access to a Podman service. The base
+container does not request privileged access or mount a host container-engine
+socket automatically; configure that explicitly if your derived project needs
+container integration tests.
+
+#### Optional SOPS and age secrets
+
+The container supports SOPS-encrypted files without storing a private age key
+in Git. Before creating or rebuilding it, choose one host-side source:
+
+```bash
+# Recommended: a protected file outside this repository
+export SOPS_AGE_KEY_FILE="$HOME/.config/sops/age/keys.txt"
+
+# Or resolve the identity through the 1Password CLI
+export SOPS_AGE_KEY_OP_REF='op://YOUR_VAULT/YOUR_ITEM/password'
+
+# Direct values are supported for automation but are easier to leak
+# export SOPS_AGE_KEY='AGE-SECRET-KEY-...'
+```
+
+The host initializer copies the selected identity to
+`~/.cache/devcontainer-secrets/cron-when/sops-age-key` with mode `0600`. The
+container receives that file read-only at `/run/secrets/sops-age-key` and sets
+`SOPS_AGE_KEY_FILE` accordingly. If no identity is configured, container
+creation still succeeds, but decryption is unavailable.
+
+To start using encrypted repository files:
+
+```bash
+# Generate an identity outside the repository if you do not already have one
+mkdir -p "$HOME/.config/sops/age"
+age-keygen -o "$HOME/.config/sops/age/keys.txt"
+chmod 600 "$HOME/.config/sops/age/keys.txt"
+
+# Configure only the public recipient in Git
+cp .sops.yaml.example .sops.yaml
+age-keygen -y "$HOME/.config/sops/age/keys.txt"
+# Replace the placeholder in .sops.yaml with the printed age1... recipient
+
+# Create or edit an encrypted file
+sops secrets/example.sops.yaml
+```
+
+Commit `.sops.yaml` and encrypted `*.sops.*` files. Never commit the age
+identity, plaintext secret files, or decrypted output. Removing access to a
+password manager does not revoke an age identity someone already possesses;
+rotate the identity and re-encrypt affected files when access is revoked.
+
 ### Running tests
 
 ```bash
+# Test the default, minimal feature set
 cargo test
-# Or with justfile
+
+# Test every optional Cargo feature
+cargo test --all-features
+
+# Fast local checks
 just test
+
+# Includes the MUSL/Podman integration test
+just full-test
 ```
 
 ### Building
 
 ```bash
+# Minimal binary (the default)
 cargo build --release
+
+# Binary with optional OTLP telemetry support
+cargo build --release --features telemetry
 ```
 
 ### Running locally

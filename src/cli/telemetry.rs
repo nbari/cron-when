@@ -12,10 +12,17 @@
 //!
 //! ## Key Features
 //!
-//! - **Optional at runtime**: Zero overhead if `OTEL_EXPORTER_OTLP_ENDPOINT` not set
+//! - **Compile-time capability**: The default-off `telemetry` Cargo feature includes OTLP
+//!   support and its optional dependencies; changing it requires a rebuild
+//! - **Startup configuration**: A telemetry-enabled binary creates no OTLP exporter unless
+//!   `OTEL_EXPORTER_OTLP_ENDPOINT` is present when the process starts
 //! - **Multi-backend support**: Jaeger, Honeycomb, Grafana Tempo, AWS X-Ray, etc.
 //! - **Secure**: TLS, header authentication, compression
 //! - **Production-ready**: Proper resource attributes, propagation, graceful shutdown
+//!
+//! Cargo features are sometimes called compile-time feature flags. They are not runtime
+//! release toggles: they produce different binaries. The endpoint is runtime configuration,
+//! but it is read only at startup, so changing it requires restarting this CLI.
 //!
 //! ## Known Limitation: Short-lived Process Challenge
 //!
@@ -34,43 +41,62 @@
 //! 2. Add `#[instrument]` to functions you want to trace
 //! 3. Call `telemetry::init()` at startup
 //! 4. Call `telemetry::shutdown_tracer()` before exit
-//! 5. Set `OTEL_EXPORTER_OTLP_ENDPOINT` when you want tracing
+//! 5. Enable the `telemetry` feature and set `OTEL_EXPORTER_OTLP_ENDPOINT`
 //!
 //! ## Dependencies Required
 //!
 //! ```toml
-//! opentelemetry = "0.31.0"
-//! opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "tls"] }
-//! opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
+//! [features]
+//! telemetry = ["dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk"]
+//!
+//! [dependencies]
+//! opentelemetry = { version = "0.32.0", optional = true }
+//! opentelemetry-otlp = { version = "0.32.0", features = ["grpc-tonic", "tls"], optional = true }
+//! opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio"], optional = true }
 //! tokio = { version = "1", features = ["rt", "macros"] }
 //! tracing = "0.1"
-//! tracing-opentelemetry = "0.32.0"
+//! tracing-opentelemetry = { version = "0.33.0", optional = true }
 //! tracing-subscriber = "0.3"
 //! ```
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+#[cfg(feature = "telemetry")]
+use anyhow::anyhow;
+#[cfg(feature = "telemetry")]
 use base64::{Engine, engine::general_purpose};
+#[cfg(feature = "telemetry")]
 use opentelemetry::propagation::TextMapCompositePropagator;
+#[cfg(feature = "telemetry")]
 use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
+#[cfg(feature = "telemetry")]
 use opentelemetry_otlp::{Compression, WithExportConfig, WithTonicConfig};
+#[cfg(feature = "telemetry")]
 use opentelemetry_sdk::{
     Resource,
     propagation::{BaggagePropagator, TraceContextPropagator},
     trace::{SdkTracerProvider, Tracer},
 };
+#[cfg(feature = "telemetry")]
 use std::sync::OnceLock;
+#[cfg(feature = "telemetry")]
 use std::{collections::HashMap, env::var, time::Duration};
+#[cfg(feature = "telemetry")]
 use tonic::{
     metadata::{Ascii, Binary, MetadataKey, MetadataMap, MetadataValue},
     transport::ClientTlsConfig,
 };
-use tracing::{Level, debug};
+use tracing::Level;
+#[cfg(feature = "telemetry")]
+use tracing::debug;
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
+#[cfg(feature = "telemetry")]
 use ulid::Ulid;
 
 /// Global tracer provider (initialized once)
+#[cfg(feature = "telemetry")]
 static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
+#[cfg(feature = "telemetry")]
 fn parse_headers_env(headers_str: &str) -> HashMap<String, String> {
     headers_str
         .split(',')
@@ -86,6 +112,7 @@ fn parse_headers_env(headers_str: &str) -> HashMap<String, String> {
 // Convert HashMap<String, String> into tonic::MetadataMap
 // - Supports ASCII metadata (normal keys)
 // - Supports binary metadata keys (ending with "-bin"), values must be base64-encoded
+#[cfg(feature = "telemetry")]
 fn headers_to_metadata(headers: &HashMap<String, String>) -> Result<MetadataMap> {
     let mut meta = MetadataMap::with_capacity(headers.len());
 
@@ -116,6 +143,7 @@ fn headers_to_metadata(headers: &HashMap<String, String>) -> Result<MetadataMap>
     Ok(meta)
 }
 
+#[cfg(feature = "telemetry")]
 fn normalize_endpoint(ep: String) -> String {
     if ep.starts_with("http://") || ep.starts_with("https://") {
         ep
@@ -125,6 +153,7 @@ fn normalize_endpoint(ep: String) -> String {
     }
 }
 
+#[cfg(feature = "telemetry")]
 fn init_tracer() -> Result<Tracer> {
     // We only support gRPC now. If the user set a different protocol, log and ignore.
     if let Ok(proto) = var("OTEL_EXPORTER_OTLP_PROTOCOL")
@@ -203,9 +232,11 @@ fn init_tracer() -> Result<Tracer> {
     Ok(trace_provider.tracer(env!("CARGO_PKG_NAME")))
 }
 
-/// Initialize logging + (optional) tracing exporter
+/// Initialize local logging and, when available and configured, an OTLP exporter.
 ///
-/// Tracing is enabled if `OTEL_EXPORTER_OTLP_ENDPOINT` is set (gRPC only).
+/// Local structured logging is available in every build. OTLP export requires both the
+/// compile-time `telemetry` Cargo feature and `OTEL_EXPORTER_OTLP_ENDPOINT` at process
+/// startup. The endpoint alone cannot enable export in a default build.
 ///
 /// # Errors
 ///
@@ -225,24 +256,35 @@ pub fn init(verbosity_level: Option<Level>) -> Result<()> {
         .with_default_directive(verbosity_level.into())
         .from_env_lossy()
         .add_directive("hyper=error".parse()?)
-        .add_directive("tokio=error".parse()?)
-        .add_directive("opentelemetry_sdk=warn".parse()?);
+        .add_directive("tokio=error".parse()?);
 
-    if var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
-        let tracer = init_tracer()?;
-        let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    #[cfg(feature = "telemetry")]
+    {
+        let filter = filter.add_directive("opentelemetry_sdk=warn".parse()?);
 
-        let subscriber = Registry::default()
-            .with(fmt_layer)
-            .with(otel_layer)
-            .with(filter);
-        tracing::subscriber::set_global_default(subscriber)?;
-    } else {
-        let subscriber = Registry::default().with(fmt_layer).with(filter);
-        tracing::subscriber::set_global_default(subscriber)?;
+        if var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
+            let tracer = init_tracer()?;
+            let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+            let subscriber = Registry::default()
+                .with(fmt_layer)
+                .with(otel_layer)
+                .with(filter);
+            tracing::subscriber::set_global_default(subscriber)?;
+        } else {
+            let subscriber = Registry::default().with(fmt_layer).with(filter);
+            tracing::subscriber::set_global_default(subscriber)?;
+        }
+
+        Ok(())
     }
 
-    Ok(())
+    #[cfg(not(feature = "telemetry"))]
+    {
+        let subscriber = Registry::default().with(fmt_layer).with(filter);
+        tracing::subscriber::set_global_default(subscriber)?;
+        Ok(())
+    }
 }
 
 /// Gracefully shut down tracer provider (noop if not initialized)
@@ -277,7 +319,9 @@ pub fn init(verbosity_level: Option<Level>) -> Result<()> {
 ///
 /// We accept the cosmetic timeout for educational purposes to show the "proper"
 /// way to shutdown, even though it's imperfect for short-lived processes.
-pub fn shutdown_tracer() {
+#[cfg(feature = "telemetry")]
+#[must_use]
+pub fn shutdown_tracer() -> bool {
     if let Some(tp) = TRACER_PROVIDER.get() {
         debug!("flushing and shutting down tracer provider");
 
@@ -293,10 +337,20 @@ pub fn shutdown_tracer() {
         }
 
         debug!("tracer provider shutdown complete");
+        return true;
     }
+
+    false
 }
 
-#[cfg(test)]
+/// Return immediately when the binary was built without OTLP telemetry.
+#[cfg(not(feature = "telemetry"))]
+#[must_use]
+pub const fn shutdown_tracer() -> bool {
+    false
+}
+
+#[cfg(all(test, feature = "telemetry"))]
 mod tests {
     use super::*;
 
@@ -434,6 +488,6 @@ mod tests {
     #[test]
     fn test_shutdown_tracer_no_provider() {
         // Should not panic when no provider is initialized
-        shutdown_tracer();
+        assert!(!shutdown_tracer());
     }
 }

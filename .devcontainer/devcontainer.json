@@ -1,0 +1,53 @@
+{
+  "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
+  "name": "cron-when (Rust)",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "vscode",
+  "features": {
+    "ghcr.io/devcontainers-extra/features/sops:1.0.15": {
+      "version": "3.13.3"
+    }
+  },
+  "initializeCommand": "/bin/sh .devcontainer/initialize-secrets.sh",
+  "postCreateCommand": "/bin/bash .devcontainer/post-create.sh",
+  "runArgs": [
+    "--init",
+    "--security-opt",
+    "label=disable"
+  ],
+  "containerEnv": {
+    "CARGO_TERM_COLOR": "always",
+    "RUST_BACKTRACE": "1",
+    "SOPS_AGE_KEY_FILE": "/run/secrets/sops-age-key"
+  },
+  "mounts": [
+    {
+      "source": "${localEnv:HOME}/.cache/devcontainer-secrets/cron-when/sops-age-key",
+      "target": "/run/secrets/sops-age-key",
+      "type": "bind",
+      "readonly": true
+    }
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "cschleiden.vscode-github-actions",
+        "ms-vsliveshare.vsliveshare",
+        "rust-lang.rust-analyzer",
+        "serayuzgur.crates",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "rust-analyzer.check.command": "clippy",
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        }
+      }
+    }
+  }
+}

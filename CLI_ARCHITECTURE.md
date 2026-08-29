@@ -113,24 +113,56 @@ Each variant has a corresponding module in `src/cli/actions/` that handles its s
 
 ### 4. `telemetry.rs` - Observability/Tracing
 
-**Purpose:** Production-ready telemetry initialization with OpenTelemetry support
-**Responsibility:** Set up logging and distributed tracing compatible with multiple providers
+**Purpose:** Structured logging with feature-gated OpenTelemetry support
+**Responsibility:** Always set up local logging and optionally add distributed tracing
 
 ```rust
 pub fn init(verbosity_level: Option<tracing::Level>) -> Result<()> {
     // Initialize tracing-subscriber with console and optional OpenTelemetry layers
 }
 
-pub fn shutdown_tracer() {
-    // Gracefully shutdown tracer provider and flush pending spans
+#[must_use]
+pub fn shutdown_tracer() -> bool {
+    // Flush pending spans and report whether a provider existed
 }
 ```
 
 **Key Points:**
 - Uses `std::sync::OnceLock` for safe, one-time initialization (Rust 2024)
 - Initializes `tracing-subscriber` for structured logging
-- **Production-ready** OpenTelemetry gRPC exporter with TLS and compression
+- Keeps the OpenTelemetry dependency stack behind the default-off `telemetry` feature
+- Provides an OpenTelemetry gRPC exporter with TLS and compression when enabled
 - Graceful shutdown with span flushing
+
+#### Compile-Time Feature vs Runtime Configuration
+
+These are separate architectural decisions:
+
+1. `cargo build` creates a minimal binary without the OTLP implementation.
+2. `cargo build --features telemetry` creates a binary that can export traces.
+3. A telemetry-enabled binary creates an exporter only when
+   `OTEL_EXPORTER_OTLP_ENDPOINT` is present during process startup.
+
+The Cargo feature is a compile-time feature flag: it avoids compiling and
+shipping dependencies that a user does not need, but changing it requires a
+new binary. The environment variable is runtime configuration: the same binary
+can be configured differently in development, staging, and production, though
+this CLI must be restarted to observe a changed environment.
+
+This two-stage design follows several reusable practices:
+
+- Keep optional dependencies marked `optional = true` and group them under one
+  user-facing feature.
+- Keep features additive. Enabling a feature should add capability rather than
+  remove or conflict with another capability.
+- Ensure the default and all-feature configurations both compile and pass tests.
+- Keep baseline behavior, such as local logging, available in either build.
+- Document which feature set is used for distributed release binaries.
+
+Do not use a compile-time Cargo feature when a requirement calls for dynamic
+rollouts, per-user targeting, or an emergency switch without rebuilding. Those
+cases need a runtime feature-management design, usually with dynamic
+configuration rather than a startup-only environment variable.
 
 ### 5. `start.rs` - Main Orchestrator
 

@@ -7,17 +7,43 @@ This directory contains reusable GitHub Actions workflows for Rust projects. The
 - **test.yml** - Run tests, formatting, and clippy checks
 - **build.yml** - Build binaries for multiple platforms (depends on tests)
 - **coverage.yml** - Generate code coverage reports
-- **security.yml** - Security auditing (cargo-audit and cargo-deny)
+- **security-audit.yml** - Security auditing (cargo-audit and cargo-deny)
+- **SECURITY.md** - Vulnerability reporting and supported-version policy
 - **release.yml** - Create releases and publish to crates.io
 
 ## How to Use as Template
 
-### 1. Copy the `.github` directory and `deny.toml` to your new project
+### 1. Copy the automation and development-container files
 
 ```bash
 cp -r .github /path/to/new-project/
+cp -r .devcontainer /path/to/new-project/
 cp deny.toml /path/to/new-project/
+cp .sops.yaml.example /path/to/new-project/
 ```
+
+Update these project-specific values after copying:
+
+- `cron-when` in `.devcontainer/devcontainer.json` and
+  `initialize-secrets.sh`
+- The Rust target and pinned Cargo tools in `.devcontainer/Dockerfile`
+- The public age recipient and encrypted-file pattern in `.sops.yaml`
+- Any container-engine access required by integration tests; do not enable
+  privileged mode by default
+- Whether `--security-opt label=disable` is needed by the target provider. It
+  supports Fedora/Podman bind mounts without relabeling host paths, but can be
+  removed where SELinux labeling is not involved.
+
+The age private key is deliberately not part of the template. Contributors
+provide it through a protected host file, a direct environment value, or a
+1Password reference. The initializer stages it outside the repository and the
+container mounts it read-only. See the root README for setup and rotation
+guidance.
+
+Dependabot tracks Cargo crates, GitHub Actions, the Docker base image, and Dev
+Container Features. Pinned Cargo CLI versions inside the Dockerfile are not
+updated automatically; review them periodically and validate a complete
+container rebuild after changing them.
 
 ### 2. Required Cargo.toml Configuration
 
@@ -44,9 +70,13 @@ This template uses **rustls** for TLS, requiring no system dependencies:
 
 ```toml
 # Example TLS dependencies (if your project needs TLS/HTTPS)
+[features]
+default = []
+telemetry = ["dep:tonic", "dep:opentelemetry-otlp"]
+
 [dependencies]
-tonic = { version = "0.14", features = ["tls-webpki-roots"] }
-opentelemetry-otlp = { version = "0.31", features = ["tls-webpki-roots"] }
+tonic = { version = "0.14", features = ["tls-webpki-roots"], optional = true }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "tls-webpki-roots"], optional = true }
 ```
 
 **Benefits:**
@@ -54,6 +84,42 @@ opentelemetry-otlp = { version = "0.31", features = ["tls-webpki-roots"] }
 - Static musl builds work out of the box
 - Simplified cross-platform compilation (especially Windows)
 - Same security guarantees as OpenSSL
+
+#### Compile-Time Features and Runtime Configuration
+
+Cargo features select capabilities while compiling. They do not behave like
+runtime release toggles:
+
+```bash
+# Minimal binary
+cargo build --release
+
+# Different binary containing telemetry support
+cargo build --release --features telemetry
+
+# Runtime configuration for the telemetry-enabled binary
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 ./target/release/YOUR-BINARY-NAME
+```
+
+Changing the Cargo feature set requires rebuilding and redeploying the binary.
+Changing an environment variable does not require rebuilding, but an
+application that reads configuration only at startup must be restarted.
+
+When adapting this template:
+
+- Mark feature-specific dependencies `optional = true` and include them with
+  `dep:dependency-name` in one user-facing feature.
+- Prefer additive, independently useful features; avoid mutually exclusive
+  feature combinations.
+- Keep `default = []` when the optional capability is large or specialized.
+  Add it to `default` only when most users should receive it.
+- Test the default feature set and `--all-features` in CI.
+- Decide and document which feature set published release artifacts contain.
+  `build.yml` validates both configurations, while `release.yml` currently
+  publishes the minimal default binary. Add `--features telemetry` to the
+  release workflow if your project promises telemetry-enabled downloads.
+- Use a runtime feature-management system—not Cargo features—when you need live
+  rollouts, targeting, or a kill switch without rebuilding and restarting.
 
 ### 3. GitHub Secrets Required
 
@@ -85,15 +151,17 @@ name = "your-package-name"  # ← This is used
 
 ## Workflow Behavior
 
-### On Every Push to Any Branch
+### On Every Push or Pull Request
 
 1. **test.yml** runs:
    - `cargo fmt --check`
    - `cargo clippy`
-   - `cargo test` on Ubuntu, macOS, Windows
+   - Minimal and all-feature checks
+   - An MSRV check using the `rust-version` from `Cargo.toml`
+   - Minimal and all-feature tests on Ubuntu, macOS, Windows
 
 2. **build.yml** runs (if tests pass):
-   - Builds release binaries for:
+   - Builds both the minimal default configuration and `--features telemetry` for:
      - Linux (x86_64-unknown-linux-musl)
      - macOS (x86_64-apple-darwin)
      - Windows (x86_64-pc-windows-msvc)
@@ -123,11 +191,10 @@ This lets you test the full release workflow without publishing.
 
 ## Security Auditing
 
-**security.yml** runs automatically:
+**security-audit.yml** runs automatically:
 - **Daily at 00:00 UTC** (scheduled)
-- On pushes to `main`/`master` branches
-- On pull requests
-- As part of `build.yml` (in parallel with coverage)
+- As part of `build.yml` on every push and pull request (in parallel with coverage)
+- Manually through GitHub Actions when an ad hoc audit is needed
 
 It performs two types of checks:
 
@@ -216,7 +283,7 @@ jobs:
   #   secrets: inherit
 
   # security:
-  #   uses: ./.github/workflows/security.yml
+  #   uses: ./.github/workflows/security-audit.yml
 
   build:
     needs: test

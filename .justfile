@@ -2,12 +2,16 @@
 # This file is template-ready - works with any Rust project
 # Just update project-specific references (URLs, container names, etc.)
 
-default: test
+default:
   @just --list
 
-# Test suite (includes unit tests + integration tests)
-test: clippy fmt unit-test integration-test
-  @echo "✅ All tests passed!"
+# Fast local test suite (no containers or cross-compilation)
+test: clippy fmt-check unit-test
+  @echo "✅ Local tests passed!"
+
+# Full test suite, including the MUSL/container integration test
+full-test: test integration-test
+  @echo "✅ Full test suite passed!"
 
 # Unit tests
 unit-test:
@@ -28,6 +32,11 @@ clippy:
 fmt:
   @echo "🎨 Formatting code..."
   cargo fmt --all
+
+# Verify formatting without modifying source files
+fmt-check:
+  @echo "🎨 Checking formatting..."
+  cargo fmt --all -- --check
 
 # Run benchmarks
 bench:
@@ -79,7 +88,7 @@ check-develop:
     fi
     echo "✅ On develop branch"
 
-_bump bump_kind: check-develop check-clean clean update test
+_bump bump_kind: check-develop check-clean
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -136,8 +145,8 @@ _bump bump_kind: check-develop check-clean clean update test
     echo "🧹 Running clean build..."
     cargo clean
 
-    echo "🧪 Running tests with new version (via just test)..."
-    just test
+    echo "🧪 Running the full test suite with the new version..."
+    just full-test
 
     git add .
     git commit -m "bump version to ${new_version}"
@@ -212,7 +221,7 @@ _deploy-merge-and-tag:
     echo "   - develop branch: bumped and pushed"
     echo "   - main branch: merged and pushed"
     echo "   - tag $new_version: created and pushed"
-    echo "🔗 Monitor release: https://github.com/nbari/pg_exporter/actions"
+    echo "🔗 Monitor release: https://github.com/nbari/cron-when/actions"
 
 # Deploy: merge to main, tag, and push everything
 deploy: bump _deploy-merge-and-tag
@@ -227,7 +236,7 @@ deploy-major: bump-major _deploy-merge-and-tag
 # Usage:
 #   just t-deploy
 #   just t-deploy "optional tag message"
-t-deploy message="CI test": check-develop check-clean test
+t-deploy message="CI test": check-develop check-clean full-test
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -258,10 +267,10 @@ audit:
 # Check dependency licenses
 deny:
   @echo "📜 Checking dependency licenses..."
-  cargo deny check
+  cargo deny --all-features check
 
 # Full CI check (what runs in CI)
-ci: clippy fmt test audit deny
+ci: full-test audit deny
   @echo "✅ All CI checks passed!"
 
 # Build RPM package

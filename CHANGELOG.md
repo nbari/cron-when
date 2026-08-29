@@ -120,5 +120,7 @@ This project is intentionally over-engineered as an educational template demonst
 - Comprehensive testing including container integration tests
 - CI/CD best practices with GitHub Actions
 
-OpenTelemetry adds ~2-3 MB to binary but has zero runtime cost when disabled.
-See `CLI_ARCHITECTURE.md` for detailed discussion of design decisions.
+At the time of this release, OpenTelemetry added ~2-3 MB to every binary while
+the exporter remained inactive when it was not configured. Current releases
+place that dependency stack behind the default-off `telemetry` Cargo feature;
+see `README.md` and `CLI_ARCHITECTURE.md` for the current behavior and tradeoffs.

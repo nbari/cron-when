@@ -3,8 +3,10 @@
 # Then allow it: direnv allow
 
 # === OpenTelemetry Tracing (Optional) ===
-# Enable distributed tracing for development/debugging
-# The application has ZERO runtime cost when this is not set
+# Compile-time: build with `--features telemetry` to include OTLP support.
+# Runtime: set an endpoint below to activate export when the process starts.
+# Setting these variables cannot add telemetry to a default binary, and changing
+# them requires restarting the process. The default build omits the OTLP stack.
 
 # Option 1: Local Jaeger (start with: just jaeger)
 #export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
@@ -32,5 +34,6 @@
 #export CRON_WHEN_COLOR=1
 
 # === Template Note ===
-# This configuration pattern works for any Rust CLI with OpenTelemetry
+# This startup-configuration pattern works for Rust CLIs with OpenTelemetry.
+# It is not a live feature-flag service or a substitute for dynamic rollouts.
 # Adjust variable names for your project (CRON_WHEN_* → YOUR_APP_*)
