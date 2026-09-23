@@ -50,12 +50,12 @@
 //! telemetry = ["dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk"]
 //!
 //! [dependencies]
-//! opentelemetry = { version = "0.32.0", optional = true }
-//! opentelemetry-otlp = { version = "0.32.0", features = ["grpc-tonic", "tls"], optional = true }
-//! opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio"], optional = true }
+//! opentelemetry = { version = "0.33.0", optional = true }
+//! opentelemetry-otlp = { version = "0.33.0", features = ["grpc-tonic", "tls-ring"], optional = true }
+//! opentelemetry_sdk = { version = "0.33.0", features = ["rt-tokio"], optional = true }
 //! tokio = { version = "1", features = ["rt", "macros"] }
 //! tracing = "0.1"
-//! tracing-opentelemetry = { version = "0.33.0", optional = true }
+//! tracing-opentelemetry = { version = "0.34.0", optional = true }
 //! tracing-subscriber = "0.3"
 //! ```
 
