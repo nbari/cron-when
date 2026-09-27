@@ -338,7 +338,9 @@ deploy() {
 }
 
 # Apply branch protection: MAIN_BRANCH only accepts commits whose REQUIRED_CHECK
-# passed (admins included), with signed commits and linear history; DEVELOP_BRANCH
+# passed (admins included), with signed commits and linear history. Every field is
+# set explicitly: GitHub keeps an omitted one (an old "lock branch" would then block
+# every release push once admins are enforced). DEVELOP_BRANCH
 # keeps signed, linear history but no required checks, since it receives untested
 # merges by design and MAIN_BRANCH is the gate. No pull requests are required.
 protect() {
@@ -352,7 +354,11 @@ protect() {
   "restrictions": null,
   "required_linear_history": true,
   "allow_force_pushes": false,
-  "allow_deletions": false
+  "allow_deletions": false,
+  "block_creations": false,
+  "required_conversation_resolution": false,
+  "lock_branch": false,
+  "allow_fork_syncing": false
 }
 EOF
     gh api -X PUT "repos/${repo}/branches/${DEVELOP_BRANCH}/protection" --input - >/dev/null <<EOF
@@ -363,7 +369,11 @@ EOF
   "restrictions": null,
   "required_linear_history": true,
   "allow_force_pushes": false,
-  "allow_deletions": false
+  "allow_deletions": false,
+  "block_creations": false,
+  "required_conversation_resolution": false,
+  "lock_branch": false,
+  "allow_fork_syncing": false
 }
 EOF
     for branch in "${MAIN_BRANCH}" "${DEVELOP_BRANCH}"; do
