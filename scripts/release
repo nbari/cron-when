@@ -94,16 +94,20 @@ tag_exists() {
     git rev-parse -q --verify "refs/tags/$1" >/dev/null 2>&1
 }
 
+# Canonical numbers only (no leading zeros, at most six digits): the gate uses them in
+# bash arithmetic, where a leading zero would mean octal.
 check_seconds() {
     local name=$1 value=$2 min=$3
-    if [[ ! "${value}" =~ ^[0-9]+$ ]] || ((10#${value} < min)); then
-        die "${name} must be a whole number of seconds, at least ${min} (got '${value}')."
+    if [[ ! "${value}" =~ ^(0|[1-9][0-9]{0,5})$ ]] || ((value < min)); then
+        die "${name} must be a whole number of seconds from ${min} to 999999, without leading zeros (got '${value}')."
     fi
 }
 
-# Everything a release needs, checked before anything is changed or pushed.
+# Everything a release needs, checked before anything is changed or pushed. With
+# mode "unpushed-bump", deploy() has recognized a committed-but-unpushed bump and
+# checks everything else before pushing it; only then may HEAD be one commit ahead.
 preflight() {
-    local kind=$1 version probe
+    local kind=$1 mode=${2:-} version probe
     version="$(next_version "${kind}")"
     [[ "$(git branch --show-current)" == "${DEVELOP_BRANCH}" ]] ||
         die "Not on ${DEVELOP_BRANCH} (currently on: $(git branch --show-current))."
@@ -119,8 +123,9 @@ preflight() {
     check_seconds RELEASE_RERUN_WAIT "${RERUN_WAIT}" 0
 
     git fetch --quiet --tags origin
-    [[ "$(git rev-parse HEAD)" == "$(git rev-parse "origin/${DEVELOP_BRANCH}")" ]] ||
+    if [[ "${mode}" != "unpushed-bump" && "$(git rev-parse HEAD)" != "$(git rev-parse "origin/${DEVELOP_BRANCH}")" ]]; then
         die "${DEVELOP_BRANCH} differs from origin/${DEVELOP_BRANCH}; pull or push it first."
+    fi
     git merge-base --is-ancestor "origin/${MAIN_BRANCH}" HEAD ||
         die "origin/${MAIN_BRANCH} has commits ${DEVELOP_BRANCH} lacks, so it cannot fast-forward; merge it into ${DEVELOP_BRANCH} first."
     gh auth status >/dev/null 2>&1 || die "gh must be authenticated to follow CI (gh auth login)."
@@ -301,13 +306,15 @@ deploy() {
     git fetch --quiet --tags origin
     current="$(current_version)"
 
-    # A bump committed but never pushed (its push failed): push exactly that commit.
+    # A bump committed but never pushed (its push failed): after the full preflight,
+    # which then tolerates exactly this commit, push it.
     if [[ "$(git branch --show-current)" == "${DEVELOP_BRANCH}" ]] && ! tag_exists "${current}" &&
         [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/${DEVELOP_BRANCH}")" ]] &&
         [[ "$(git rev-parse -q --verify HEAD^ || true)" == "$(git rev-parse "origin/${DEVELOP_BRANCH}")" ]] &&
         [[ "$(git log -1 --format=%s HEAD)" == "bump version to ${current}" ]] &&
         [[ -z "$(git diff --name-only HEAD^ HEAD | grep -vxF -f <(printf '%s\n' "${RELEASE_FILES[@]}") || true)" ]]; then
-        echo "ℹ️  The bump to ${current} was committed but never pushed; pushing it now."
+        echo "ℹ️  The bump to ${current} was committed but never pushed; checking, then pushing it."
+        preflight current unpushed-bump
         git push origin "${DEVELOP_BRANCH}"
         sync_branch
     fi
