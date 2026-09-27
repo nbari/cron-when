@@ -536,3 +536,30 @@ cargo build --release --features telemetry
 ```bash
 cargo run -- "*/5 * * * *"
 ```
+
+### Releasing
+
+Releases promote the exact commit that passed CI. Work lands on `develop`; when its
+**Test & Build** run is green, run `just deploy` (or `just deploy-minor` /
+`just deploy-major`) from a clean `develop`. `scripts/release` first checks
+everything that could fail later (`main` can fast-forward to `develop`, the tag is
+free, `gh` is authenticated, git can sign), then pushes a bump commit that changes
+only the version (`Cargo.toml` and the package entry in `Cargo.lock`) after a clean
+local `just full-test`. It waits for the Test & Build run of that exact commit and
+only then signs the tag on it and pushes it to `main` together with the tag in one
+atomic, fast-forward-only push, so `main`, the tag and the tested commit are always
+the same. The tag starts the Deploy workflow, whose guard publishes the GitHub
+release and the crate only when the tagged commit is on `main` and passed Test &
+Build. Dependency updates (`just update`) are ordinary commits on `develop`.
+
+While it waits, the script polls GitHub every 30 seconds
+(`RELEASE_POLL_SECONDS`), for at most an hour per attempt (`RELEASE_CI_TIMEOUT`).
+If a job fails, it keeps waiting 15 minutes (`RELEASE_RERUN_WAIT`): click
+"Re-run failed jobs" in GitHub and the release continues by itself once that attempt
+passes. Whenever a release stops midway (CI failed and was not re-run, the network
+or SSH connection dropped, the bump's push failed, Ctrl-C), the bumped version has
+no tag yet and running `just deploy` again finishes it instead of bumping a second
+time (`just deploy-current` does the same explicitly). `just release-preflight`
+runs only the checks. Branch protection is kept as code: `just protect-branches`
+makes `main` accept only commits whose aggregate **CI OK** check passed, admins
+included, with signed commits and linear history.

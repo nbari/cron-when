@@ -99,3 +99,30 @@ jobs:
       - name: Build (telemetry)
         if: matrix.feature-set == 'telemetry'
         run: cargo build --release --locked --target ${{ matrix.target }} --features telemetry
+
+  # One aggregate check for branch protection and the release flow: it passes only
+  # when every job above succeeded, so the required check never depends on job or
+  # matrix names.
+  ci-ok:
+    name: CI OK
+    if: always()
+    needs:
+      - test
+      - coverage
+      - security
+      - containers
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job to have succeeded
+        shell: bash
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: ${RESULTS}"
+          for result in ${RESULTS}; do
+            if [[ "${result}" != "success" ]]; then
+              echo "::error::A required job finished with '${result}'."
+              exit 1
+            fi
+          done
