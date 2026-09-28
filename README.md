@@ -626,7 +626,8 @@ not a real gate (the Coveralls upload) must not fail CI: its step uses
   days, and "Re-run failed jobs" works for 30 days; beyond that, the next patch release is
   the way forward. The script follows the run id `gh workflow run` prints; with an older
   `gh` that prints none, it waits 15 minutes before dispatching again. Signing uses your
-  SSH agent: if it is locked, the deploy stops before changing anything, and a rerun
+  SSH agent: if it is locked, the deploy stops before anything is promoted (the preflight
+  already tries a signature; at worst a candidate is left on `release`), and a rerun
   resumes once it is unlocked.
 
 #### Settings
