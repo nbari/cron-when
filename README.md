@@ -539,8 +539,9 @@ cargo run -- "*/5 * * * *"
 
 ### Releasing
 
-Releases promote the exact commit that passed CI. Work lands on `develop`; when its
-**Test & Build** run is green, run `just deploy` (or `just deploy-minor` /
+Releases promote the exact commit that passed CI. Work, including dependency
+updates (`just update`), lands on `sandbox`; when its **Test & Build** run is green,
+merge it into `develop` and run `just deploy` (or `just deploy-minor` /
 `just deploy-major`) from a clean `develop`. `scripts/release` first checks
 everything that could fail later (`main` can fast-forward to `develop`, the tag is
 free, `gh` is authenticated, git can sign), then pushes a bump commit that changes
@@ -550,7 +551,10 @@ only then signs the tag on it and pushes it to `main` together with the tag in o
 atomic, fast-forward-only push, so `main`, the tag and the tested commit are always
 the same. The tag starts the Deploy workflow, whose guard publishes the GitHub
 release and the crate only when the tagged commit is on `main` and passed Test &
-Build. Dependency updates (`just update`) are ordinary commits on `develop`.
+Build. `sandbox` follows `develop` throughout: right after the bump, and again after
+the release, it moves to `develop` when that is a fast-forward or when its content
+was squash-merged (the old tip is kept locally as `refs/backup/sandbox/<tip>`); work
+on `sandbox` that `develop` lacks is never touched.
 
 While it waits, the script polls GitHub every 30 seconds
 (`RELEASE_POLL_SECONDS`), for at most an hour per attempt (`RELEASE_CI_TIMEOUT`).

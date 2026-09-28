@@ -35,7 +35,7 @@ set -euo pipefail
 # --- Project configuration: the only part to adapt when copying this script ---
 DEVELOP_BRANCH="develop"
 MAIN_BRANCH="main"
-SYNC_BRANCH=""                   # e.g. "sandbox"; empty disables the sync step
+SYNC_BRANCH="sandbox"            # work branch kept equal to DEVELOP_BRANCH; empty disables the sync
 CI_WORKFLOW="build.yml"          # workflow that runs on every branch push
 REQUIRED_CHECK="CI OK"           # aggregate job in CI_WORKFLOW that branch protection requires
 RELEASE_FILES=(Cargo.toml Cargo.lock)
