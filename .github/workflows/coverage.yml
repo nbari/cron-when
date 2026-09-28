@@ -42,5 +42,9 @@ jobs:
           files: coverage.lcov
           flags: rust
 
+      # A Coveralls outage must not block CI OK (and with it a release): the coverage is
+      # still computed above, and a re-run of this job uploads it later.
       - name: Coveralls GitHub Action
         uses: coverallsapp/github-action@v2
+        with:
+          fail-on-error: false
