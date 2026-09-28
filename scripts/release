@@ -23,13 +23,15 @@
 # "bump version to X.Y.Z", X.Y.Z untagged, and a tree identical to the bump reproduced
 # on DEVELOP_BRANCH) instead of building another, replaces a stale former candidate
 # (never anything else found on STAGING_BRANCH), and says "nothing to release" when
-# DEVELOP_BRANCH is the last release. Until the atomic push succeeds, a failed or
-# interrupted release leaves DEVELOP_BRANCH and MAIN_BRANCH as they were: fix on the
-# work branch, merge, run it again. Once it succeeds the release is complete, and a
-# rerun only finishes the tidy-up (sync, removing STAGING_BRANCH). The one change a
-# deploy makes to the local DEVELOP_BRANCH is fast-forwarding it when origin's tip is
-# exactly a tagged release (a run cut off after its push, or a release made from
-# another clone); any other difference from origin is refused.
+# DEVELOP_BRANCH is the last release: its tag exists and MAIN_BRANCH contains it (a
+# tag MAIN_BRANCH lacks is an incomplete release, refused with the way out). Until the
+# atomic push succeeds, a failed or interrupted release leaves DEVELOP_BRANCH and
+# MAIN_BRANCH as they were: fix on the work branch, merge, run it again. Once it
+# succeeds the release is complete, and a rerun only finishes the tidy-up (sync,
+# removing STAGING_BRANCH). The one change a deploy makes to the local DEVELOP_BRANCH
+# is fast-forwarding it when origin's tip is exactly such a release (a run cut off
+# after its push, or a release made from another clone); any other difference from
+# origin is refused.
 # Server-side, `protect` makes GitHub refuse any push to MAIN_BRANCH whose commit has
 # not passed REQUIRED_CHECK (admins included), and the release workflow's guard
 # refuses to publish a tag that is not on MAIN_BRANCH with a green CI run.
@@ -179,11 +181,19 @@ preflight() {
     echo "✅ Release preflight passed"
 }
 
+# A version counts as released when its tag exists and origin/MAIN_BRANCH contains the
+# tagged commit. The Deploy guard publishes nothing else, so a tag anywhere else (made
+# by hand, or by an older flow) is an incomplete release, never a finished one.
+is_released() {
+    tag_exists "$1" &&
+        git merge-base --is-ancestor "$(git rev-parse "refs/tags/$1^{commit}")" "origin/${MAIN_BRANCH}" 2>/dev/null
+}
+
 # Fast-forward the clean local DEVELOP_BRANCH when it is behind origin and origin's tip
-# is exactly the commit of the tag for its own version: a release that landed while
-# this clone was not updated (a run cut off right after its push, or a release made
-# from another clone). Everything it adopts has been released; any other difference
-# from origin is left for check_remote to refuse.
+# is exactly the commit of a finished release of its own version (see is_released): a
+# release that landed while this clone was not updated (a run cut off right after its
+# push, or a release made from another clone). Everything it adopts has been released;
+# any other difference from origin is left for check_remote to refuse.
 catch_up_released() {
     local head remote version
     head="$(git rev-parse HEAD)"
@@ -191,7 +201,7 @@ catch_up_released() {
     [[ -n "${remote}" && "${head}" != "${remote}" ]] || return 0
     git merge-base --is-ancestor "${head}" "${remote}" || return 0
     version="$(version_at "${remote}" 2>/dev/null || true)"
-    if [[ -z "${version}" ]] || ! tag_exists "${version}" ||
+    if [[ -z "${version}" ]] || ! is_released "${version}" ||
         [[ "$(git rev-parse "refs/tags/${version}^{commit}")" != "${remote}" ]]; then
         return 0
     fi
@@ -201,16 +211,52 @@ catch_up_released() {
 
 # Throwaway worktrees live under the git directory: on the repository's disk (a build
 # can be large, and /tmp is often a small tmpfs) and outside the working tree, so
-# nothing in them shows up in git status.
+# nothing in them shows up in git status. Each gets a unique path and is locked with
+# the pid of the run that owns it, so concurrent runs never remove each other's and a
+# killed run's worktree can be told apart from a live one.
+WORKTREE_LOCK="scripts/release pid"
 worktree_root() {
     git rev-parse --path-format=absolute --git-common-dir
 }
 
+# Create a detached worktree of a commit; prints its path.
+add_worktree() {
+    local prefix=$1 commit=$2 dir
+    dir="$(mktemp -d "$(worktree_root)/${prefix}.XXXXXX")" || return 1
+    if ! git worktree add --quiet --detach --lock --reason "${WORKTREE_LOCK} $$" "${dir}" "${commit}" >/dev/null 2>&1; then
+        rm -rf "${dir}"
+        return 1
+    fi
+    printf '%s' "${dir}"
+}
+
+# Remove a worktree this run created (or one proven stale by prune_stale_worktrees).
 remove_worktree() {
     [[ -n "$1" ]] || return 0
+    git worktree unlock "$1" >/dev/null 2>&1 || true
     git worktree remove --force "$1" >/dev/null 2>&1 || true
     rm -rf "$1"
     git worktree prune >/dev/null 2>&1 || true
+}
+
+# Remove the worktrees of runs that were killed: under worktree_root, locked by this
+# script, with a pid that no longer runs. Anything else is left alone.
+prune_stale_worktrees() {
+    local root listing line path="" pid
+    root="$(worktree_root)"
+    listing="$(git worktree list --porcelain)"
+    while IFS= read -r line; do
+        case "${line}" in
+            "worktree "*) path="${line#worktree }" ;;
+            "locked ${WORKTREE_LOCK} "*)
+                pid="${line##* }"
+                if [[ "${path}" == "${root}/release-"* && "${pid}" =~ ^[0-9]+$ ]] && ! kill -0 "${pid}" 2>/dev/null; then
+                    remove_worktree "${path}"
+                    echo "ℹ️  Removed ${path}, left by a release run that was stopped."
+                fi
+                ;;
+        esac
+    done <<<"${listing}"
 }
 
 # Whether a commit carries a signature. Presence only: GitHub verifies it against the
@@ -226,11 +272,9 @@ is_signed() {
 # worktree (apply_bump only, no verification); fails when it cannot be reproduced.
 expected_tree() {
     local base=$1 kind=$2 dir tree=""
-    dir="$(mktemp -d "$(worktree_root)/release-check.XXXXXX")"
-    if git worktree add --quiet --detach "${dir}" "${base}" >/dev/null 2>&1; then
-        tree="$(cd "${dir}" && apply_bump "${kind}" >/dev/null 2>&1 &&
-            git add -- "${RELEASE_FILES[@]}" && git write-tree 2>/dev/null)" || tree=""
-    fi
+    dir="$(add_worktree release-check "${base}")" || return 1
+    tree="$(cd "${dir}" && apply_bump "${kind}" >/dev/null 2>&1 &&
+        git add -- "${RELEASE_FILES[@]}" && git write-tree 2>/dev/null)" || tree=""
     remove_worktree "${dir}"
     [[ -n "${tree}" ]] && printf '%s' "${tree}"
 }
@@ -248,7 +292,7 @@ candidate_problem() {
     elif [[ "$(version_at "${sha}" || true)" != "${version}" ]]; then
         echo "its Cargo.toml says $(version_at "${sha}" || true)"
     elif tag_exists "${version}"; then
-        echo "${version} is already released"
+        echo "${version} is already tagged"
     elif ! is_signed "${sha}"; then
         echo "not signed"
     elif ! expected="$(expected_tree "${base}" "${kind}")"; then
@@ -274,22 +318,20 @@ is_former_candidate() {
 # to STAGING_BRANCH only (with a lease on whatever it held before). The checkout the
 # deploy runs in is never touched, and whatever the bump or the verification leaves
 # behind goes away with the worktree, also on failure or Ctrl-C. The commit holds the
-# bump alone: a change to any other tracked file, or one the verification makes to a
-# tracked file, is refused rather than committed.
+# bump alone: it is made from the tree recorded before verification, so nothing the
+# verification stages can reach it, and a verification that changes tracked files (in
+# the index or on disk) is refused.
 CANDIDATE=""
 BUILD_DIR=""
 BUILD_FROM=""
 build_candidate() {
-    local kind=$1 previous_staging=$2 base previous new changed
+    local kind=$1 previous_staging=$2 base previous new changed bump_tree
     base="$(git rev-parse HEAD)"
     previous="$(current_version)"
     BUILD_FROM="$(pwd)"
-    BUILD_DIR="$(worktree_root)/release-candidate"
-    remove_worktree "${BUILD_DIR}" # left over by a run that was killed
-    git worktree add --quiet --detach "${BUILD_DIR}" "${base}" ||
-        die "Could not create the candidate worktree ${BUILD_DIR}."
     trap 'rc=$?; cd "${BUILD_FROM}"; remove_worktree "${BUILD_DIR}"; ((rc == 0)) || echo "   Nothing was staged; ${DEVELOP_BRANCH} and ${STAGING_BRANCH} are unchanged." >&2' EXIT
     trap 'exit 130' INT TERM
+    BUILD_DIR="$(add_worktree release-candidate "${base}")" || die "Could not create a worktree for the candidate."
     cd "${BUILD_DIR}"
     echo "🔧 Building the ${kind} candidate from ${previous} in a temporary worktree..."
     apply_bump "${kind}"
@@ -297,17 +339,17 @@ build_candidate() {
     bump_is_valid "${previous}" "${kind}" "${new}" || die "Expected a ${kind} bump from ${previous}, got ${new}."
     ! tag_exists "${new}" || die "Tag ${new} already exists."
     git add -- "${RELEASE_FILES[@]}"
-    changed="$(git diff --name-only)"
+    changed="$(git diff-files --name-only)"
     [[ -z "${changed}" ]] ||
         die "The bump changed files outside RELEASE_FILES (${changed//$'\n'/, }); refusing to stage it."
+    bump_tree="$(git write-tree)"
     echo "🧪 Verifying ${new} locally before staging it..."
     verify_locally
-    changed="$(git diff --name-only)"
+    changed="$({ git diff-index --cached --name-only "${bump_tree}"; git diff-files --name-only; } | sort -u)"
     [[ -z "${changed}" ]] ||
         die "Verification changed tracked files (${changed//$'\n'/, }); the candidate must hold the bump alone."
     # Branch protection requires signed commits: sign explicitly, whatever commit.gpgsign says.
-    git commit --quiet -S -m "bump version to ${new}"
-    CANDIDATE="$(git rev-parse HEAD)"
+    CANDIDATE="$(git commit-tree -S "${bump_tree}" -p "${base}" -m "bump version to ${new}")"
     is_signed "${CANDIDATE}" || die "The candidate commit was not signed; check the signing setup."
     git push --quiet --force-with-lease="${STAGING_BRANCH}:${previous_staging}" \
         origin "${CANDIDATE}:refs/heads/${STAGING_BRANCH}" ||
@@ -488,19 +530,24 @@ sync_branch() {
 deploy() {
     local kind=$1 base current version staging candidate="" problem="" rc
     preflight catch-up
+    prune_stale_worktrees
     base="$(git rev-parse HEAD)"
     current="$(current_version)"
     staging="$(remote_tip "${STAGING_BRANCH}")"
 
     if tag_exists "${current}"; then
         if [[ "$(git rev-parse "refs/tags/${current}^{commit}")" == "${base}" ]]; then
+            is_released "${current}" ||
+                die "Tag ${current} is on ${DEVELOP_BRANCH} (${base:0:12}), but origin/${MAIN_BRANCH} does not contain it, so it was never released (the Deploy guard publishes only tags on ${MAIN_BRANCH}). Delete the tag (git push origin :refs/tags/${current} && git tag -d ${current}) and run the deploy again: it releases this commit as is once CI passes on it."
             # Also finishes the tidy-up of a release whose run was cut off after its push.
             finish_release "${base}"
             echo "✅ ${DEVELOP_BRANCH} is release ${current}; nothing new to release."
             return 0
         fi
         [[ "${kind}" != "current" ]] ||
-            die "${current} is already released; use deploy, deploy-minor or deploy-major for a new version."
+            die "${current} is already tagged; use deploy, deploy-minor or deploy-major for a new version."
+        is_released "${current}" ||
+            echo "⚠️  Tag ${current} is not on origin/${MAIN_BRANCH}, so it was never published."
         version="$(next_version "${kind}")"
         ! tag_exists "${version}" || die "Tag ${version} already exists."
         [[ -z "${staging}" ]] || problem="$(candidate_problem "${staging}" "${base}" "${version}" "${kind}")"
@@ -555,11 +602,18 @@ finish_release() {
 
 # Read-only summary of where a release stands.
 status() {
-    local base current staging run state
+    local base current staging run state label
     git fetch --quiet --prune --tags origin
     base="$(remote_tip "${DEVELOP_BRANCH}")"
     current="$(version_at "${base}" 2>/dev/null || true)"
-    echo "origin/${DEVELOP_BRANCH}: ${base:0:12} (version ${current:-?}$(tag_exists "${current}" && echo ", released" || echo ", not released"))"
+    if is_released "${current}"; then
+        label="released"
+    elif tag_exists "${current}"; then
+        label="tagged, but origin/${MAIN_BRANCH} does not contain the tag: an incomplete release"
+    else
+        label="not released"
+    fi
+    echo "origin/${DEVELOP_BRANCH}: ${base:0:12} (version ${current:-?}, ${label})"
     echo "origin/${MAIN_BRANCH}:    $(remote_tip "${MAIN_BRANCH}" | cut -c1-12)"
     staging="$(remote_tip "${STAGING_BRANCH}")"
     if [[ -z "${staging}" ]]; then
@@ -575,7 +629,7 @@ status() {
     elif ! tag_exists "${current}"; then
         reason="${DEVELOP_BRANCH} carries the unreleased ${current}, which deploy releases as is"
     elif [[ "$(git rev-parse "refs/tags/${current}^{commit}")" == "${base}" ]]; then
-        reason="${DEVELOP_BRANCH} is release ${current}; nothing to release"
+        reason="${DEVELOP_BRANCH} is tagged ${current}; nothing to stage (see the version line above)"
     else
         for k in patch minor major; do
             if bump_is_valid "${current}" "${k}" "${v}"; then

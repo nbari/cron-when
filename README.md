@@ -545,10 +545,12 @@ its **Test & Build** run is green, merge it into `develop` and run `just deploy`
 `just deploy-minor` / `just deploy-major`) from a clean `develop`. `scripts/release`
 first checks everything that could fail later (`main` can fast-forward to `develop`,
 `gh` is authenticated, git can sign, the settings are valid), then builds the
-candidate in a temporary worktree under `.git`, so your checkout stays on a clean
-`develop` whatever the build leaves behind: a signed commit that changes only the
-version (`Cargo.toml` and the package entry in `Cargo.lock`), verified there with a
-clean `just full-test`. The candidate goes to the scratch `release` branch only, where
+candidate in a temporary worktree under `.git` (one per run, so concurrent deploys
+never touch each other's), so your checkout stays on a clean `develop` whatever the
+build leaves behind: a signed commit that changes only the version (`Cargo.toml` and
+the package entry in `Cargo.lock`), verified there with a clean `just full-test`. The
+commit is made from the bump as it was before verification, and a verification that
+changes tracked files stops the release. The candidate goes to the scratch `release` branch only, where
 Test & Build runs on it; `develop` and `main` are not touched yet. When that run
 passes, the script signs the tag on the candidate and pushes it to `develop` and
 `main` together with the tag in one atomic, fast-forward-only push, so the three move
@@ -561,7 +563,9 @@ version in `Cargo.toml`.
 signed, still sits on the current `develop` and its content is exactly the version
 bump (no rebuild, no new bump), replaces an outdated candidate when `develop` has moved
 on (keeping the old tip as a local `refs/backup/release/<sha>` ref), and reports
-"nothing new to release" when `develop` is already the last release. It never
+"nothing new to release" when `develop` is already the last release: tagged, with the
+tag on `main`. A tag `main` does not contain was never published, so the deploy stops
+and explains how to release that commit properly. It never
 overwrites a `release` branch holding anything other than a former candidate. Until
 the final atomic push succeeds, a failed or interrupted release leaves `develop` and
 `main` as they were: re-run the failed jobs, or fix on `sandbox` and merge into
