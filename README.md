@@ -545,9 +545,10 @@ its **Test & Build** run is green, merge it into `develop` and run `just deploy`
 `just deploy-minor` / `just deploy-major`) from a clean `develop`. `scripts/release`
 first checks everything that could fail later (`main` can fast-forward to `develop`,
 `gh` is authenticated, git can sign, the settings are valid), then builds the
-candidate on a detached HEAD: a commit that changes only the version (`Cargo.toml`
-and the package entry in `Cargo.lock`), verified locally with a clean
-`just full-test`. The candidate goes to the scratch `release` branch only, where
+candidate in a temporary worktree under `.git`, so your checkout stays on a clean
+`develop` whatever the build leaves behind: a signed commit that changes only the
+version (`Cargo.toml` and the package entry in `Cargo.lock`), verified there with a
+clean `just full-test`. The candidate goes to the scratch `release` branch only, where
 Test & Build runs on it; `develop` and `main` are not touched yet. When that run
 passes, the script signs the tag on the candidate and pushes it to `develop` and
 `main` together with the tag in one atomic, fast-forward-only push, so the three move
@@ -556,23 +557,27 @@ tag starts the Deploy workflow, whose guard publishes the GitHub release and the
 only when the tagged commit is on `main`, passed Test & Build, and carries the tag's
 version in `Cargo.toml`.
 
-`just deploy` is idempotent. A rerun resumes the candidate on `release` when it still
-sits on the current `develop` and its content is exactly the version bump (no
-rebuild, no new bump), replaces an outdated candidate when `develop` has moved on, and
-reports "nothing new to release" when `develop` is already the last release. It never
+`just deploy` is idempotent. A rerun resumes the candidate on `release` when it is
+signed, still sits on the current `develop` and its content is exactly the version
+bump (no rebuild, no new bump), replaces an outdated candidate when `develop` has moved
+on (keeping the old tip as a local `refs/backup/release/<sha>` ref), and reports
+"nothing new to release" when `develop` is already the last release. It never
 overwrites a `release` branch holding anything other than a former candidate. Until
 the final atomic push succeeds, a failed or interrupted release leaves `develop` and
 `main` as they were: re-run the failed jobs, or fix on `sandbox` and merge into
 `develop`, then run `just deploy` again. Once that push succeeds the release is done;
-if the run is cut off right after it, the next `just deploy` only finishes the
-tidy-up. While it waits, the script polls GitHub every 10 seconds until the run
+if the run is cut off right after it, the next `just deploy` fast-forwards your local
+`develop` to the release and only finishes the tidy-up. That is the only case in which
+it moves a local `develop` that is behind origin; otherwise it asks you to pull first.
+While it waits, the script polls GitHub every 10 seconds until the run
 appears (up to 5 minutes), then every 30 seconds (`RELEASE_POLL_SECONDS`), for at
 most an hour per attempt (`RELEASE_CI_TIMEOUT`), and after each failed attempt keeps
 waiting 15 minutes (`RELEASE_RERUN_WAIT`) so "Re-run failed jobs" in GitHub lets the
 release continue by itself. With `RELEASE_NO_WAIT=1` it
 stops once the candidate is staged (or while CI still runs), and a later
 `just deploy` finishes the release. `just release-status` shows `develop`, `main`,
-the staged candidate and its CI run without changing anything, and
-`just release-preflight` runs only the checks. Branch protection is kept as code:
+the staged candidate (checked the same way a rerun checks it before resuming) and its
+CI run without changing anything, and `just release-preflight` runs only the checks,
+changing nothing apart from fetching. Branch protection is kept as code:
 `just protect-branches` makes `main` accept only commits whose aggregate **CI OK**
 check passed, admins included, with signed commits and linear history.

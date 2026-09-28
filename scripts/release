@@ -2,12 +2,15 @@
 # Release flow: stage the release commit, let CI test it, then promote exactly that commit.
 #
 # Flow overview (`scripts/release deploy <patch|minor|major|current>`)
-#   1. Preflight, before anything changes: a clean DEVELOP_BRANCH equal to its origin
-#      copy, MAIN_BRANCH able to fast-forward to it, an authenticated gh, valid
-#      settings and a working signing setup (a throwaway tag exercises the key).
-#   2. Candidate: on a detached HEAD, bump the version (RELEASE_FILES only), run the
-#      local verification and commit "bump version to X.Y.Z". The commit goes to
-#      STAGING_BRANCH only; DEVELOP_BRANCH and MAIN_BRANCH are not touched yet.
+#   1. Preflight, before anything changes (read-only apart from a fetch): a clean
+#      DEVELOP_BRANCH equal to its origin copy, MAIN_BRANCH able to fast-forward to it,
+#      an authenticated gh, valid settings and a working signing setup (a throwaway
+#      tag exercises the key).
+#   2. Candidate: in a temporary worktree of DEVELOP_BRANCH under the git directory
+#      (the checkout the deploy runs in never changes), bump the version (RELEASE_FILES
+#      only), run the local verification and commit a signed "bump version to X.Y.Z".
+#      The commit goes to STAGING_BRANCH only; DEVELOP_BRANCH and MAIN_BRANCH are not
+#      touched yet, and the worktree is removed with whatever the build left in it.
 #   3. Gate: wait for the push-triggered CI_WORKFLOW run of exactly that commit. After
 #      a failure it keeps waiting RELEASE_RERUN_WAIT seconds for "Re-run failed jobs".
 #   4. Promote: sign the tag on the candidate and push it to DEVELOP_BRANCH and
@@ -16,14 +19,17 @@
 #      STAGING_BRANCH.
 #
 # The release state lives only on STAGING_BRANCH, so `deploy` is idempotent: it
-# resumes a valid candidate (one commit on the current DEVELOP_BRANCH, named "bump
-# version to X.Y.Z", X.Y.Z untagged, and a tree identical to the bump reproduced on
-# DEVELOP_BRANCH) instead of building another, replaces a stale former candidate
+# resumes a valid candidate (one signed commit on the current DEVELOP_BRANCH, named
+# "bump version to X.Y.Z", X.Y.Z untagged, and a tree identical to the bump reproduced
+# on DEVELOP_BRANCH) instead of building another, replaces a stale former candidate
 # (never anything else found on STAGING_BRANCH), and says "nothing to release" when
 # DEVELOP_BRANCH is the last release. Until the atomic push succeeds, a failed or
 # interrupted release leaves DEVELOP_BRANCH and MAIN_BRANCH as they were: fix on the
 # work branch, merge, run it again. Once it succeeds the release is complete, and a
-# rerun only finishes the tidy-up (local fast-forward, sync, removing STAGING_BRANCH).
+# rerun only finishes the tidy-up (sync, removing STAGING_BRANCH). The one change a
+# deploy makes to the local DEVELOP_BRANCH is fast-forwarding it when origin's tip is
+# exactly a tagged release (a run cut off after its push, or a release made from
+# another clone); any other difference from origin is refused.
 # Server-side, `protect` makes GitHub refuse any push to MAIN_BRANCH whose commit has
 # not passed REQUIRED_CHECK (admins included), and the release workflow's guard
 # refuses to publish a tag that is not on MAIN_BRANCH with a green CI run.
@@ -118,14 +124,12 @@ check_seconds() {
     fi
 }
 
-# Everything a release needs, checked before anything is changed or pushed.
-preflight() {
-    local probe
-    if ! git symbolic-ref -q HEAD >/dev/null; then
-        die "HEAD is detached (an interrupted candidate build?); run: git checkout ${DEVELOP_BRANCH}"
-    fi
-    [[ "$(git branch --show-current)" == "${DEVELOP_BRANCH}" ]] ||
-        die "Not on ${DEVELOP_BRANCH} (currently on: $(git branch --show-current))."
+# Checks that need no network: on a clean DEVELOP_BRANCH, the tools and valid settings.
+check_local() {
+    local branch
+    branch="$(git branch --show-current)"
+    [[ "${branch}" == "${DEVELOP_BRANCH}" ]] ||
+        die "Not on ${DEVELOP_BRANCH} (currently on: ${branch:-a detached HEAD})."
     [[ -z "$(git status --porcelain)" ]] || die "Working directory is not clean; commit or stash first."
     for tool in cargo jq gh git; do
         command -v "${tool}" >/dev/null 2>&1 || die "${tool} is required."
@@ -135,17 +139,23 @@ preflight() {
     check_seconds RELEASE_CI_TIMEOUT "${CI_TIMEOUT}" 60
     check_seconds RELEASE_RERUN_WAIT "${RERUN_WAIT}" 0
     [[ "${NO_WAIT}" =~ ^[01]$ ]] || die "RELEASE_NO_WAIT must be 0 or 1 (got '${NO_WAIT}')."
+}
 
-    git fetch --quiet --prune --tags origin
-    # Only behind origin (a release finished elsewhere, or a run was cut off right after
-    # its push): fast-forward. The tree is clean, so nothing can be lost.
-    if [[ "$(git rev-parse HEAD)" != "$(remote_tip "${DEVELOP_BRANCH}")" ]] &&
-        git merge-base --is-ancestor HEAD "origin/${DEVELOP_BRANCH}"; then
-        git merge --quiet --ff-only "origin/${DEVELOP_BRANCH}"
-        echo "ℹ️  Fast-forwarded local ${DEVELOP_BRANCH} to origin/${DEVELOP_BRANCH} ($(git rev-parse --short HEAD))."
+# Checks against the fetched origin: DEVELOP_BRANCH equal to origin's, MAIN_BRANCH able
+# to fast-forward to it, gh authenticated and a signing key that works.
+check_remote() {
+    local head remote probe
+    head="$(git rev-parse HEAD)"
+    remote="$(remote_tip "${DEVELOP_BRANCH}")"
+    [[ -n "${remote}" ]] || die "origin has no ${DEVELOP_BRANCH} branch."
+    if [[ "${head}" != "${remote}" ]]; then
+        if git merge-base --is-ancestor "${head}" "${remote}"; then
+            die "Local ${DEVELOP_BRANCH} is behind origin/${DEVELOP_BRANCH}; pull first (git pull --ff-only)."
+        elif git merge-base --is-ancestor "${remote}" "${head}"; then
+            die "${DEVELOP_BRANCH} has local commits origin/${DEVELOP_BRANCH} lacks; push them first."
+        fi
+        die "Local ${DEVELOP_BRANCH} and origin/${DEVELOP_BRANCH} have diverged; reconcile them first."
     fi
-    [[ "$(git rev-parse HEAD)" == "$(remote_tip "${DEVELOP_BRANCH}")" ]] ||
-        die "${DEVELOP_BRANCH} has local commits origin/${DEVELOP_BRANCH} lacks; push them first."
     git merge-base --is-ancestor "origin/${MAIN_BRANCH}" HEAD ||
         die "origin/${MAIN_BRANCH} has commits ${DEVELOP_BRANCH} lacks, so it cannot fast-forward; merge it into ${DEVELOP_BRANCH} first."
     gh auth status >/dev/null 2>&1 || die "gh must be authenticated to follow CI (gh auth login)."
@@ -156,36 +166,96 @@ preflight() {
     if [[ -n "${SSH_CONNECTION:-}" && -z "${HERDR_ENV:-}" && -z "${TMUX:-}" ]]; then
         echo "⚠️  On SSH outside Herdr/tmux: a dropped connection stops the wait; rerun the deploy to resume."
     fi
+}
+
+# Everything a release needs, checked before anything is changed or pushed. Read-only
+# apart from the fetch; deploy passes `catch-up` to first fast-forward a local
+# DEVELOP_BRANCH that is behind a release which already landed on origin.
+preflight() {
+    check_local
+    git fetch --quiet --prune --tags origin
+    [[ "${1:-}" != "catch-up" ]] || catch_up_released
+    check_remote
     echo "✅ Release preflight passed"
 }
 
+# Fast-forward the clean local DEVELOP_BRANCH when it is behind origin and origin's tip
+# is exactly the commit of the tag for its own version: a release that landed while
+# this clone was not updated (a run cut off right after its push, or a release made
+# from another clone). Everything it adopts has been released; any other difference
+# from origin is left for check_remote to refuse.
+catch_up_released() {
+    local head remote version
+    head="$(git rev-parse HEAD)"
+    remote="$(remote_tip "${DEVELOP_BRANCH}")"
+    [[ -n "${remote}" && "${head}" != "${remote}" ]] || return 0
+    git merge-base --is-ancestor "${head}" "${remote}" || return 0
+    version="$(version_at "${remote}" 2>/dev/null || true)"
+    if [[ -z "${version}" ]] || ! tag_exists "${version}" ||
+        [[ "$(git rev-parse "refs/tags/${version}^{commit}")" != "${remote}" ]]; then
+        return 0
+    fi
+    git merge --quiet --ff-only "${remote}"
+    echo "ℹ️  origin/${DEVELOP_BRANCH} is release ${version}; fast-forwarded local ${DEVELOP_BRANCH} to it."
+}
+
+# Throwaway worktrees live under the git directory: on the repository's disk (a build
+# can be large, and /tmp is often a small tmpfs) and outside the working tree, so
+# nothing in them shows up in git status.
+worktree_root() {
+    git rev-parse --path-format=absolute --git-common-dir
+}
+
+remove_worktree() {
+    [[ -n "$1" ]] || return 0
+    git worktree remove --force "$1" >/dev/null 2>&1 || true
+    rm -rf "$1"
+    git worktree prune >/dev/null 2>&1 || true
+}
+
+# Whether a commit carries a signature. Presence only: GitHub verifies it against the
+# account's keys when a protected branch requires signed commits.
+is_signed() {
+    local header
+    header="$(git cat-file commit "$1")"
+    header="${header%%$'\n\n'*}"
+    [[ $'\n'"${header}" == *$'\ngpgsig'* ]]
+}
+
 # The tree the `kind` bump produces on top of `base`, reproduced in a throwaway
-# worktree (apply_bump only, no verification); prints nothing if it cannot be built.
+# worktree (apply_bump only, no verification); fails when it cannot be reproduced.
 expected_tree() {
     local base=$1 kind=$2 dir tree=""
-    dir="$(mktemp -d)"
+    dir="$(mktemp -d "$(worktree_root)/release-check.XXXXXX")"
     if git worktree add --quiet --detach "${dir}" "${base}" >/dev/null 2>&1; then
         tree="$(cd "${dir}" && apply_bump "${kind}" >/dev/null 2>&1 &&
             git add -- "${RELEASE_FILES[@]}" && git write-tree 2>/dev/null)" || tree=""
-        git worktree remove --force "${dir}" >/dev/null 2>&1 || true
     fi
-    rm -rf "${dir}"
-    git worktree prune >/dev/null 2>&1 || true
-    printf '%s' "${tree}"
+    remove_worktree "${dir}"
+    [[ -n "${tree}" ]] && printf '%s' "${tree}"
 }
 
-# A resumable candidate: one commit directly on base, named "bump version to
-# <version>", for a version without a tag, whose tree is byte for byte what the
-# `kind` bump produces on base, so it changes the version and nothing else.
-candidate_is_valid() {
+# Why a staged commit is not a resumable candidate for `version` on base, or nothing
+# when it is one: a single signed commit directly on base, named "bump version to
+# <version>", for a version without a tag, whose tree is byte for byte what the `kind`
+# bump produces on base, so it changes the version and nothing else.
+candidate_problem() {
     local sha=$1 base=$2 version=$3 kind=$4 expected
-    [[ -n "${sha}" ]] || return 1
-    [[ "$(git rev-parse -q --verify "${sha}^" || true)" == "${base}" ]] || return 1
-    [[ "$(git log -1 --format=%s "${sha}")" == "bump version to ${version}" ]] || return 1
-    [[ "$(version_at "${sha}")" == "${version}" ]] || return 1
-    ! tag_exists "${version}" || return 1
-    expected="$(expected_tree "${base}" "${kind}")"
-    [[ -n "${expected}" && "${expected}" == "$(git rev-parse "${sha}^{tree}")" ]]
+    if [[ "$(git rev-parse -q --verify "${sha}^" || true)" != "${base}" ]]; then
+        echo "not on the current ${DEVELOP_BRANCH}"
+    elif [[ "$(git log -1 --format=%s "${sha}")" != "bump version to ${version}" ]]; then
+        echo "not named \"bump version to ${version}\""
+    elif [[ "$(version_at "${sha}" || true)" != "${version}" ]]; then
+        echo "its Cargo.toml says $(version_at "${sha}" || true)"
+    elif tag_exists "${version}"; then
+        echo "${version} is already released"
+    elif ! is_signed "${sha}"; then
+        echo "not signed"
+    elif ! expected="$(expected_tree "${base}" "${kind}")"; then
+        echo "the ${kind} bump could not be reproduced to compare it"
+    elif [[ "${expected}" != "$(git rev-parse "${sha}^{tree}")" ]]; then
+        echo "its content is not exactly the ${kind} bump"
+    fi
 }
 
 # A former candidate, which may be replaced: one commit named "bump version to X.Y.Z"
@@ -200,38 +270,50 @@ is_former_candidate() {
     [[ -z "$(git diff --name-only "${parent}" "${sha}" | grep -vxF -f <(printf '%s\n' "${RELEASE_FILES[@]}") || true)" ]]
 }
 
-# Build the candidate on a detached HEAD and push it to STAGING_BRANCH only (with a
-# lease on whatever it held before). DEVELOP_BRANCH, locally and on origin, stays as
-# it was; the working tree returns to it afterwards, also on failure or Ctrl-C.
+# Build the candidate in a temporary worktree of the DEVELOP_BRANCH commit and push it
+# to STAGING_BRANCH only (with a lease on whatever it held before). The checkout the
+# deploy runs in is never touched, and whatever the bump or the verification leaves
+# behind goes away with the worktree, also on failure or Ctrl-C. The commit holds the
+# bump alone: a change to any other tracked file, or one the verification makes to a
+# tracked file, is refused rather than committed.
 CANDIDATE=""
+BUILD_DIR=""
+BUILD_FROM=""
 build_candidate() {
-    local kind=$1 previous_staging=$2 previous new
+    local kind=$1 previous_staging=$2 base previous new changed
+    base="$(git rev-parse HEAD)"
     previous="$(current_version)"
-    git checkout --quiet --detach
-    trap 'git checkout --quiet --force "${DEVELOP_BRANCH}" 2>/dev/null || true' EXIT
+    BUILD_FROM="$(pwd)"
+    BUILD_DIR="$(worktree_root)/release-candidate"
+    remove_worktree "${BUILD_DIR}" # left over by a run that was killed
+    git worktree add --quiet --detach "${BUILD_DIR}" "${base}" ||
+        die "Could not create the candidate worktree ${BUILD_DIR}."
+    trap 'rc=$?; cd "${BUILD_FROM}"; remove_worktree "${BUILD_DIR}"; ((rc == 0)) || echo "   Nothing was staged; ${DEVELOP_BRANCH} and ${STAGING_BRANCH} are unchanged." >&2' EXIT
     trap 'exit 130' INT TERM
-    echo "🔧 Building the ${kind} candidate from ${previous}..."
+    cd "${BUILD_DIR}"
+    echo "🔧 Building the ${kind} candidate from ${previous} in a temporary worktree..."
     apply_bump "${kind}"
     new="$(current_version)"
     bump_is_valid "${previous}" "${kind}" "${new}" || die "Expected a ${kind} bump from ${previous}, got ${new}."
     ! tag_exists "${new}" || die "Tag ${new} already exists."
+    git add -- "${RELEASE_FILES[@]}"
+    changed="$(git diff --name-only)"
+    [[ -z "${changed}" ]] ||
+        die "The bump changed files outside RELEASE_FILES (${changed//$'\n'/, }); refusing to stage it."
     echo "🧪 Verifying ${new} locally before staging it..."
     verify_locally
-    git add -- "${RELEASE_FILES[@]}"
-    [[ -z "$(git status --porcelain --untracked-files=no | grep -v '^M  ' || true)" ]] ||
-        die "The bump changed files outside RELEASE_FILES; refusing to commit them."
-    local untracked
-    untracked="$(git ls-files --others --exclude-standard | tr '\n' ' ')"
-    [[ -z "${untracked}" ]] ||
-        die "Verification created untracked files (${untracked% }); add them to .gitignore or remove them, then rerun."
+    changed="$(git diff --name-only)"
+    [[ -z "${changed}" ]] ||
+        die "Verification changed tracked files (${changed//$'\n'/, }); the candidate must hold the bump alone."
     # Branch protection requires signed commits: sign explicitly, whatever commit.gpgsign says.
     git commit --quiet -S -m "bump version to ${new}"
-    git cat-file commit HEAD | grep -q '^gpgsig' || die "The candidate commit was not signed; check the signing setup."
     CANDIDATE="$(git rev-parse HEAD)"
+    is_signed "${CANDIDATE}" || die "The candidate commit was not signed; check the signing setup."
     git push --quiet --force-with-lease="${STAGING_BRANCH}:${previous_staging}" \
         origin "${CANDIDATE}:refs/heads/${STAGING_BRANCH}" ||
         die "Could not push the candidate to ${STAGING_BRANCH} (it changed meanwhile?); run the deploy again."
-    git checkout --quiet --force "${DEVELOP_BRANCH}"
+    cd "${BUILD_FROM}"
+    remove_worktree "${BUILD_DIR}"
     trap - EXIT INT TERM
     echo "✅ Staged ${new} as ${CANDIDATE:0:12} on ${STAGING_BRANCH}"
 }
@@ -340,7 +422,7 @@ promote() {
     echo "⬆️  Pushing ${sha:0:12} to ${MAIN_BRANCH}$([[ ${#refs[@]} -eq 3 ]] && echo " and ${DEVELOP_BRANCH}") with tag ${version} (atomic)..."
     if ! git push --atomic origin "${refs[@]}"; then
         git tag -d "${version}" >/dev/null 2>&1 || true
-        die "Push rejected; nothing was released. If ${DEVELOP_BRANCH} moved meanwhile, run the deploy again for a fresh candidate."
+        die "Push rejected; nothing was released. If ${DEVELOP_BRANCH} moved meanwhile, pull it and run the deploy again for a fresh candidate."
     fi
     # The release is complete from here on; the rest only tidies local refs and must
     # not turn a finished release into a reported failure.
@@ -404,8 +486,8 @@ sync_branch() {
 }
 
 deploy() {
-    local kind=$1 base current version staging candidate="" rc
-    preflight
+    local kind=$1 base current version staging candidate="" problem="" rc
+    preflight catch-up
     base="$(git rev-parse HEAD)"
     current="$(current_version)"
     staging="$(remote_tip "${STAGING_BRANCH}")"
@@ -421,15 +503,18 @@ deploy() {
             die "${current} is already released; use deploy, deploy-minor or deploy-major for a new version."
         version="$(next_version "${kind}")"
         ! tag_exists "${version}" || die "Tag ${version} already exists."
-        if candidate_is_valid "${staging}" "${base}" "${version}" "${kind}"; then
+        [[ -z "${staging}" ]] || problem="$(candidate_problem "${staging}" "${base}" "${version}" "${kind}")"
+        if [[ -n "${staging}" && -z "${problem}" ]]; then
             candidate="${staging}"
             echo "ℹ️  Resuming candidate ${version} (${candidate:0:12}) on ${STAGING_BRANCH}."
         else
             if [[ -n "${staging}" ]]; then
                 is_former_candidate "${staging}" ||
                     die "${STAGING_BRANCH} holds ${staging:0:12} \"$(git log -1 --format=%s "${staging}")\", which is not a release candidate; move that work to another branch or delete ${STAGING_BRANCH}, then rerun."
-                git update-ref "refs/backup/${STAGING_BRANCH}/${staging:0:12}" "${staging}"
-                echo "ℹ️  ${STAGING_BRANCH} holds a stale candidate; replacing it (old tip kept as refs/backup/${STAGING_BRANCH}/${staging:0:12})."
+                local backup="refs/backup/${STAGING_BRANCH}/${staging:0:12}"
+                git update-ref "${backup}" "${staging}"
+                echo "ℹ️  ${STAGING_BRANCH} holds a stale candidate (${problem}); replacing it."
+                echo "   Old tip kept locally as ${backup}; restore it with: git push origin ${backup}:refs/heads/${STAGING_BRANCH}"
             fi
             build_candidate "${kind}" "${staging}"
             candidate="${CANDIDATE}"
@@ -481,17 +566,30 @@ status() {
         echo "${STAGING_BRANCH}: none (no release in progress)"
         return 0
     fi
-    local subject reason="" re='^bump version to ([0-9]+\.[0-9]+\.[0-9]+)$' v=""
+    # The same test deploy applies before resuming, the reproduced bump included.
+    local subject reason="" re='^bump version to ([0-9]+\.[0-9]+\.[0-9]+)$' v="" kind="" k
     subject="$(git log -1 --format=%s "${staging}")"
-    if [[ "${subject}" =~ ${re} ]]; then
-        v="${BASH_REMATCH[1]}"
-        [[ "$(git rev-parse -q --verify "${staging}^" || true)" == "${base}" ]] || reason="not on the current ${DEVELOP_BRANCH}"
-        [[ "$(version_at "${staging}")" == "${v}" ]] || reason="${reason:+${reason}; }its Cargo.toml says $(version_at "${staging}")"
-        ! tag_exists "${v}" || reason="${reason:+${reason}; }${v} is already released"
-    else
+    [[ ! "${subject}" =~ ${re} ]] || v="${BASH_REMATCH[1]}"
+    if [[ -z "${v}" ]]; then
         reason="not a release candidate; deploy will refuse to overwrite it"
+    elif ! tag_exists "${current}"; then
+        reason="${DEVELOP_BRANCH} carries the unreleased ${current}, which deploy releases as is"
+    elif [[ "$(git rev-parse "refs/tags/${current}^{commit}")" == "${base}" ]]; then
+        reason="${DEVELOP_BRANCH} is release ${current}; nothing to release"
+    else
+        for k in patch minor major; do
+            if bump_is_valid "${current}" "${k}" "${v}"; then
+                kind="${k}"
+                break
+            fi
+        done
+        if [[ -z "${kind}" ]]; then
+            reason="${v} is not a patch, minor or major bump of ${current}"
+        else
+            reason="$(candidate_problem "${staging}" "${base}" "${v}" "${kind}")"
+        fi
     fi
-    echo "${STAGING_BRANCH}: ${staging:0:12} \"${subject}\" ($([[ -z "${reason}" ]] && echo "candidate for ${v}" || echo "stale: ${reason}"))"
+    echo "${STAGING_BRANCH}: ${staging:0:12} \"${subject}\" ($([[ -z "${reason}" ]] && echo "${kind} candidate for ${v}; a ${kind} deploy resumes it" || echo "stale: ${reason}"))"
     run="$(find_run "${staging}" 2>/dev/null || true)"
     if [[ -n "${run}" ]]; then
         state="$(gh run view "${run}" --json status,conclusion,attempt,url --jq '"\(.status) \(.conclusion // "-") (attempt \(.attempt)) \(.url)"' 2>/dev/null || echo "unknown")"

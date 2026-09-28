@@ -112,7 +112,7 @@ deploy-current:
 release-status:
     @scripts/release status
 
-# Check everything a release needs without changing anything
+# Check everything a release needs; changes nothing apart from fetching
 release-preflight:
     @scripts/release preflight
 
