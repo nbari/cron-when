@@ -606,7 +606,7 @@ sha256_of() {
 # manifest's COMMIT and VERSION to be the candidate's, and check every file against the
 # manifest's checksum lists (SHA256SUMS, *.SHA256), exactly as the tag's run will.
 check_candidate_manifest() {
-    local run=$1 sha=$2 version=$3 dir manifest error="" artifact list hash name file commit found
+    local run=$1 sha=$2 version=$3 dir manifest error="" artifact list hash name file commit found listed present
     [[ -n "${CANDIDATE_MANIFEST}" ]] || return 0
     dir="$(mktemp -d "$(worktree_root)/release-manifest.XXXXXX")"
     manifest="${dir}/${CANDIDATE_MANIFEST}"
@@ -625,10 +625,12 @@ check_candidate_manifest() {
             gh run download "${run}" --name "${artifact}" --dir "${dir}/artifacts/${artifact}" >/dev/null 2>&1 ||
                 error="its artifact ${artifact} cannot be downloaded"
         done <"${manifest}/ARTIFACTS"
+        listed=""
         for list in "${manifest}"/SHA256SUMS "${manifest}"/*.SHA256; do
             [[ -z "${error}" && -f "${list}" ]] || continue
             while [[ -z "${error}" ]] && read -r hash name; do
                 name="${name#\*}"
+                listed+="${name}"$'\n'
                 file="$(find "${dir}/artifacts" -type f -name "${name}" -print 2>/dev/null | head -n 1)"
                 if [[ -z "${file}" ]]; then
                     error="${name} from its manifest is missing"
@@ -637,6 +639,14 @@ check_candidate_manifest() {
                 fi
             done <"${list}"
         done
+        # Exactly the files the checksum lists name, as the tag's run requires: no list
+        # missing, nothing unlisted.
+        [[ -n "${error}" ]] || present="$(find "${dir}/artifacts" -type f -exec basename {} \; 2>/dev/null | sort || true)"
+        if [[ -z "${error}" && -z "${listed}" ]]; then
+            error="its ${CANDIDATE_MANIFEST} has no checksum list"
+        elif [[ -z "${error}" && "$(sort <<<"${listed%$'\n'}")" != "${present}" ]]; then
+            error="its artifacts hold files its manifest does not list ($(comm -13 <(sort <<<"${listed%$'\n'}") <(echo "${present}") | tr '\n' ' '))"
+        fi
     fi
     rm -rf "${dir}"
     [[ -z "${error}" ]] ||
@@ -808,6 +818,7 @@ deploy() {
 finish_release() {
     local released=$1
     sync_branch || true
+    rm -f "$(worktree_root)/release-candidate-run"
     if [[ "$(remote_tip "${STAGING_BRANCH}")" == "${released}" ]]; then
         git push --quiet --force-with-lease="${STAGING_BRANCH}:${released}" origin ":refs/heads/${STAGING_BRANCH}" 2>/dev/null ||
             echo "ℹ️  Left ${STAGING_BRANCH} in place (it changed meanwhile)."
