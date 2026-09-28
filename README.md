@@ -559,13 +559,18 @@ packages and archives, and a `cargo publish --dry-run`), keeping the artifacts. 
 both pass, the script signs the tag on the candidate and pushes it to `develop` and
 `main` together with the tag in one atomic, fast-forward-only push, so the three move
 together or not at all. It then brings `sandbox` in step and deletes `release`. The
-tag starts the Deploy workflow once more, but this time it builds nothing: its guard
-checks that the tagged commit is on `main`, carries the tag's version and passed both
-runs, and it publishes the candidate run's artifacts as the GitHub release, then the
-crate, so what ships is byte for byte what was tested. The `X.Y.Z` tag is the only tag
-the flow creates, and only after everything that can fail has passed; if publishing
-itself hits a GitHub or crates.io hiccup, "Re-run failed jobs" on the tag's run
-finishes it (a crate version that is already uploaded is skipped).
+tag starts the Deploy workflow once more, but this time it builds nothing. Its guard
+checks that the tagged commit is on `main`, carries the tag's version and passed Test &
+Build, and that the signed tag names a successful candidate run of that commit. It then
+publishes exactly the files in that run's manifest, checked by SHA-256, as the GitHub
+release, and uploads the crate the candidate run packaged and verified (repackaged with
+the same toolchain without building, and uploaded only when its checksum matches). The
+`X.Y.Z` tag is the only tag the flow creates, and every build and packaging step has
+passed before it exists; what is left after it are the uploads to GitHub and
+crates.io. If one of them hits an outage, "Re-run failed jobs" on the tag's run
+finishes it (GitHub allows re-runs for 30 days), without touching the tag: the release
+is updated in place, and a crate version already on crates.io is accepted only with the
+candidate's checksum.
 
 `just deploy` is idempotent. A rerun resumes the candidate on `release` when it is
 signed, still sits on the current `develop` and its content is exactly the version
