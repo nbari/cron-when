@@ -539,70 +539,133 @@ cargo run -- "*/5 * * * *"
 
 ### Releasing
 
-Releases stage the release commit, let CI test it, and only then promote exactly that
-commit. Work, including dependency updates (`just update`), lands on `sandbox`; when
-its **Test & Build** run is green, merge it into `develop` and run `just deploy` (or
-`just deploy-minor` / `just deploy-major`) from a clean `develop`. `scripts/release`
-first checks everything that could fail later (`main` can fast-forward to `develop`,
-`gh` is authenticated, git can sign, the settings are valid), then builds the
-candidate in a temporary worktree under `.git` (one per run, so concurrent deploys
-never touch each other's), so your checkout stays on a clean `develop` whatever the
-build leaves behind: a signed commit that changes only the version (`Cargo.toml` and
-the package entry in `Cargo.lock`), verified there with a clean `just full-test`. The
-commit is made from the bump as it was before verification, and a verification that
-changes tracked files stops the release. The candidate goes to the scratch `release`
-branch only; `develop` and `main` are not touched yet. Two runs test it in parallel:
-Test & Build, and a manual run of the
-Deploy workflow on `release` that does everything a release does except publishing
-(the tests, every build for Linux x86_64 and arm64, macOS and Windows, the RPM and DEB
-packages and archives, and the crate packaged and verified), keeping the artifacts
-with a manifest of their SHA-256 sums. When
-both pass, the script signs the tag on the candidate and pushes it to `develop` and
-`main` together with the tag in one atomic, fast-forward-only push, so the three move
-together or not at all. It then brings `sandbox` in step and deletes `release`. The
-tag starts the Deploy workflow once more, but this time it builds nothing. Its guard
-checks that the tagged commit is on `main`, carries the tag's version and passed Test &
-Build, and that the signed tag names a successful candidate run of that commit. It then
-publishes exactly the files in that run's manifest, checked by SHA-256, as the GitHub
-release, and uploads the crate the candidate run packaged and verified. cargo cannot
-upload a prepared `.crate`, so `cargo publish` repackages the same source with the
-candidate's toolchain, without building; the result is byte-reproducible, and its
-checksum is compared with the manifest before the upload and with crates.io's after it.
-The `X.Y.Z` tag is the only tag the flow creates, and nothing is built after it exists;
-what is left are the uploads to GitHub and crates.io. If one of them hits an outage, "Re-run failed jobs" on the tag's run
-finishes it (GitHub allows re-runs for 30 days), without touching the tag: the release
-is updated in place, and a crate version already on crates.io is accepted only with the
-candidate's checksum. When re-running cannot help, because the publish steps of the
-tagged workflow themselves were wrong or the 30 days have passed, fix the workflow and
-release as usual, then run `just release-republish X.Y.Z`: a recovery run on `main`
-checks that tag exactly like its own run would and publishes its candidate run's
-artifacts with `main`'s workflow. The tag never moves. Both paths need the candidate
-run's artifacts, which GitHub keeps for 90 days; a publish failure shows up within
-minutes of the tag, and after that window the way forward is the next patch release.
+The release flow follows one rule: **the commit that is tagged and put on `main` is
+exactly the commit CI tested, and the published files are exactly the files CI built.**
+Nothing reaches `main` or gets tagged unless every test, build and package passed on
+that commit first, so a release never needs a tag deleted or moved. Everything lives in
+`scripts/release` (driven by the `just` recipes below), `.github/workflows/build.yml`
+(Test & Build) and `.github/workflows/release.yml` (Deploy). This repository is also the
+template for other projects; see [Using this as a template](#using-this-as-a-template).
 
-`just deploy` is idempotent. A rerun resumes the candidate on `release` when it is
-signed, still sits on the current `develop` and its content is exactly the version
-bump (no rebuild, no new bump), replaces an outdated candidate when `develop` has moved
-on (keeping the old tip as a local `refs/backup/release/<sha>` ref), and reports
-"nothing new to release" when `develop` is already the last release: tagged, with the
-tag on `main`. A tag `main` does not contain was never published, so the deploy stops
-and explains how to release that commit properly. It never
-overwrites a `release` branch holding anything other than a former candidate. Until
-the final atomic push succeeds, a failed or interrupted release leaves `develop` and
-`main` as they were: re-run the failed jobs, or fix on `sandbox` and merge into
-`develop`, then run `just deploy` again. Once that push succeeds the release is promoted;
-if the run is cut off right after it, the next `just deploy` fast-forwards your local
-`develop` to the release and only finishes the tidy-up. That is the only case in which
-it moves a local `develop` that is behind origin; otherwise it asks you to pull first.
-While it waits, the script polls GitHub every 10 seconds until the run
-appears (up to 5 minutes), then every 30 seconds (`RELEASE_POLL_SECONDS`), for at
-most an hour per attempt (`RELEASE_CI_TIMEOUT`), and after each failed attempt keeps
-waiting 15 minutes (`RELEASE_RERUN_WAIT`) so "Re-run failed jobs" in GitHub lets the
-release continue by itself. With `RELEASE_NO_WAIT=1` it
-stops once the candidate is staged (or while CI still runs), and a later
-`just deploy` finishes the release. `just release-status` shows `develop`, `main`,
-the staged candidate (checked the same way a rerun checks it before resuming) and its
-CI run without changing anything, and `just release-preflight` runs only the checks,
-changing nothing apart from fetching. Branch protection is kept as code:
-`just protect-branches` makes `main` accept only commits whose aggregate **CI OK**
-check passed, admins included, with signed commits and linear history.
+#### Day to day
+
+Work, including dependency updates (`just update`), lands on `sandbox`. When its
+**Test & Build** run is green, merge it into `develop` and run `just deploy` from a clean
+`develop`.
+
+| Command | What it does |
+|---|---|
+| `just deploy` | Release a patch version (`deploy-minor`, `deploy-major` for the others) |
+| `just deploy-current` | Release `develop`'s version as is, when it has no tag yet |
+| `just release-status` | Show `develop`, `main`, the staged candidate, its runs and the last tag's publish run |
+| `just release-preflight` | Run only the checks; changes nothing apart from fetching |
+| `just release-republish X.Y.Z` | Recovery: publish an existing tag again with `main`'s workflow |
+| `just protect-branches` | Apply the branch protection the flow relies on |
+| `just t-deploy` | Push a `t-*` test tag: tests and builds only, publishes nothing |
+
+#### What `just deploy` does
+
+```
+sandbox ──(CI green)──▶ merge into develop ──▶ just deploy
+ 1. preflight       read-only: clean develop equal to origin, main can fast-forward,
+                    gh logged in, git can sign, valid settings
+ 2. candidate       in a temporary worktree under .git: bump the version (Cargo.toml and
+                    Cargo.lock only), run `just full-test`, make a signed commit
+                    "bump version to X", and push it to the scratch `release` branch only
+ 3. two CI runs     on that exact commit, in parallel:
+                    • Test & Build
+                    • Deploy in candidate mode (a manual run on `release`): every test,
+                      every build and package (Linux x86_64/arm64 musl, macOS, Windows,
+                      RPM, DEB, archives), the crate packaged and verified, all kept as
+                      artifacts with a manifest of their SHA-256 sums; nothing published
+ 4. pre-tag check   download the manifest and every artifact, check the commit, the
+                    version and every checksum, exactly as the tag's run will
+ 5. promotion       one atomic, fast-forward-only push: develop + main + the signed tag
+                    X, whose message names the candidate run; then sandbox is brought
+                    in step and `release` deleted
+ 6. tag run         Deploy again, publish only: the guard checks the tag (signature, on
+                    main, version, Test & Build, the named candidate run), then the
+                    GitHub release gets exactly the manifest's files and the crate goes
+                    to crates.io; nothing is built
+```
+
+`just deploy` ends at step 5 ("Promoted"); step 6 runs in GitHub, and
+`just release-status` shows its state. The `X.Y.Z` tag is the only tag the flow
+creates, once, after everything that can break has passed.
+
+#### When something fails
+
+| What failed | What to do |
+|---|---|
+| Before step 5 (a test, a build, packaging, the pre-tag check) | Nothing moved: no tag, `develop` and `main` untouched. Re-run the failed jobs in GitHub (the waiting deploy continues by itself within 15 minutes), or fix on `sandbox` and merge; then `just deploy` again |
+| The deploy was interrupted (Ctrl-C, SSH dropped, GitHub outage, `RELEASE_NO_WAIT=1`) | `just deploy` again: it resumes the same candidate and the same runs |
+| A publish step in the tag run (GitHub or crates.io outage) | "Re-run failed jobs" on the tag run; the release is updated in place and an already uploaded crate is accepted only with the tested checksum |
+| The tag run's own workflow was wrong, or its 30-day re-run window passed | Fix the workflow, release as usual, then `just release-republish X.Y.Z`: a recovery run on `main` checks that tag like its own run would and publishes its candidate artifacts. The tag never moves |
+
+Rerunning `just deploy` is always safe: it never bumps twice, never tags without passing
+runs, and at worst stops again and says what is missing. A third-party service that is
+not a real gate (the Coveralls upload) must not fail CI: its step uses
+`fail-on-error: false`.
+
+#### Guarantees and limits
+
+- **Idempotent.** The release state is the `release` branch plus a local note of the
+  candidate run this clone dispatched. A rerun resumes a valid candidate (signed, on the
+  current `develop`, exactly the version bump, untagged), replaces a stale one (the old
+  tip is kept as `refs/backup/release/<sha>`), refuses anything else found on `release`,
+  and says "nothing new to release" when `develop` is the last release, meaning tagged
+  with the tag on `main`. A tag `main` lacks was never published; the deploy stops and
+  explains the way out. Local `develop` is only ever fast-forwarded when origin's tip is
+  exactly such a release; any other difference asks you to pull first.
+- **What ships is what was tested.** The release files are the candidate run's
+  artifacts, checked by SHA-256 before the tag and again in the tag run. cargo cannot
+  upload a prepared `.crate`, so `cargo publish` repackages the tag's source with the
+  candidate's toolchain, without building. That is byte-reproducible, and the checksum is
+  compared with the manifest before the upload and with crates.io's after it.
+- **Limits.** Recovery needs the candidate run's artifacts, which GitHub keeps for 90
+  days, and "Re-run failed jobs" works for 30 days; beyond that, the next patch release is
+  the way forward. The script follows the run id `gh workflow run` prints; with an older
+  `gh` that prints none, it waits 15 minutes before dispatching again. Signing uses your
+  SSH agent: if it is locked, the deploy stops before changing anything, and a rerun
+  resumes once it is unlocked.
+
+#### Settings
+
+`RELEASE_POLL_SECONDS` (30), `RELEASE_CI_TIMEOUT` (3600, per attempt) and
+`RELEASE_RERUN_WAIT` (900, after a failed attempt) are in seconds; the script polls every
+10 seconds until a run appears, for up to 5 minutes. `RELEASE_NO_WAIT=1` stops once the
+candidate is staged, or while CI still runs, and a later `just deploy` finishes. Run a
+waiting deploy inside Herdr or tmux on a remote machine, so a dropped connection does not
+stop it.
+
+#### Using this as a template
+
+The flow is generic; each project adapts the edges.
+
+| File | Copy, then adapt |
+|---|---|
+| `scripts/release` | Only the configuration block at the top: branches (`DEVELOP_BRANCH` equal to `MAIN_BRANCH` for a trunk-only repository), `CI_WORKFLOW`, `REQUIRED_CHECK`, `CANDIDATE_WORKFLOW` (empty when there is nothing to package), `CANDIDATE_MANIFEST`, push restrictions for organization repositories, `RELEASE_FILES`, and the `current_version`, `version_at`, `apply_bump` and `verify_locally` functions. Keep the bump cheap and deterministic: it is replayed to check a resumed candidate |
+| `.justfile` | The release recipes above |
+| `.github/workflows/build.yml` | Must run on every branch push, `release` included, and end with the aggregate **CI OK** job listing the jobs that are real gates. Skip per-branch side effects (preview deploys) for `release` |
+| `.github/workflows/release.yml` | Keep the guard (`candidate`, `release`, `recover`, `test-tag`) and the manifest, release and publish jobs; replace the build and package jobs with the project's own, and keep the manifest job's `EXPECTED` inventory in step with the build matrix. Every file of every artifact the release uses must be in the manifest's checksum lists |
+| `.github/workflows/coverage.yml` | Third-party uploads never fail the job |
+
+Repository setup:
+
+- `gh auth login`, and `cargo install cargo-edit` for `cargo set-version`.
+- An SSH or GPG signing key that is also registered on GitHub as a *signing* key: commits
+  and tags must be signed, and the tag run requires GitHub to verify the tag's signature.
+- Secrets for what the tag run publishes (`CRATES_TOKEN` here; `CODECOV_TOKEN` is
+  optional).
+- The Deploy workflow must exist on the default branch for manual runs to be possible.
+
+Bootstrapping a project:
+
+1. Copy and adapt the files above, push them to the work branch, and wait for Test &
+   Build; the **CI OK** check must appear on that commit.
+2. Try the candidate pipeline without releasing anything:
+   `gh workflow run release.yml --ref sandbox`. It must pass and keep the manifest.
+3. Back up the current branch protection (`gh api repos/OWNER/REPO/branches/main/protection`),
+   run `just protect-branches` and read it back.
+4. Merge into `develop`, run `just release-preflight`, then the first `just deploy`, and
+   check the tag run's release and packages.
