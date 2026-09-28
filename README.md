@@ -584,7 +584,7 @@ and explains how to release that commit properly. It never
 overwrites a `release` branch holding anything other than a former candidate. Until
 the final atomic push succeeds, a failed or interrupted release leaves `develop` and
 `main` as they were: re-run the failed jobs, or fix on `sandbox` and merge into
-`develop`, then run `just deploy` again. Once that push succeeds the release is done;
+`develop`, then run `just deploy` again. Once that push succeeds the release is promoted;
 if the run is cut off right after it, the next `just deploy` fast-forwards your local
 `develop` to the release and only finishes the tidy-up. That is the only case in which
 it moves a local `develop` that is behind origin; otherwise it asks you to pull first.
