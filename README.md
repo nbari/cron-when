@@ -651,7 +651,7 @@ described:
 | `scripts/release` | The configuration block at the top: branches (`DEVELOP_BRANCH` equal to `MAIN_BRANCH` for a trunk-only repository), `CI_WORKFLOW`, `REQUIRED_CHECK`, `CANDIDATE_WORKFLOW` (empty when there is nothing to package), `CANDIDATE_MANIFEST`, `MAIN_PUSH_RESTRICTIONS` and `REQUIRE_CONVERSATION_RESOLUTION` (copy the repository's current values), `RELEASE_FILES`, and the `current_version`, `version_at`, `apply_bump` and `verify_locally` functions. Keep the bump cheap and deterministic: it is replayed to check a resumed candidate |
 | `.justfile` | The release recipes above, plus whatever `verify_locally` runs (here `just full-test`) |
 | `.github/workflows/build.yml` | Must run on every branch push, `release` included, and end with the aggregate **CI OK** job listing the jobs that are real gates. Skip per-branch side effects (preview deploys) for `release` |
-| `.github/workflows/release.yml` | Keep the guard (`candidate`, `release`, `recover`, `test-tag`) and the manifest, release and publish jobs; replace the build and package jobs with the project's own, and keep the manifest job's `EXPECTED` inventory in step with the build matrix. Every file of every artifact the release uses must be in the manifest's checksum lists |
+| `.github/workflows/release.yml` | Keep the guard (`candidate`, `release`, `recover`, `test-tag`), the manifest job and the GitHub release job; replace the build and package jobs with the project's own, and keep the manifest job's `EXPECTED` inventory in step with the build matrix. Every file of every artifact the release uses must be in the manifest's checksum lists. The `crate` and `publish` jobs are for crates.io: adapt them to the project's destinations (images, registries), or remove them with their manifest entries (`CRATE.SHA256`, `crate` in `ARTIFACTS`) when nothing goes to crates.io |
 | `.github/workflows/coverage.yml` | Third-party uploads never fail the job |
 
 These are project-specific, so copy or replace them as the project needs:
@@ -661,14 +661,17 @@ These are project-specific, so copy or replace them as the project needs:
 - local test helpers such as `scripts/validate-integration-test.sh` (used by
   `just full-test`);
 - the package metadata in `Cargo.toml` (`[package.metadata.deb]`,
-  `[package.metadata.generate-rpm]`: asset paths and package names) and `deny.toml`.
+  `[package.metadata.generate-rpm]`: asset paths and package names) and `deny.toml`;
+- a committed `Cargo.lock`: the workflows build with `--locked`, and the bump updates it.
 
 Some names appear in more than one file and must stay consistent. The Deploy guard in
 `release.yml` names the main branch (`main`), the CI workflow (`build.yml`), its own path
 (`.github/workflows/release.yml`) and reads the version from `Cargo.toml`, so it must
 match `MAIN_BRANCH`, `CI_WORKFLOW`, `CANDIDATE_WORKFLOW` and `version_at`. Before the
 first release, search the copied files for `main`, `develop`, `sandbox`, `build.yml`,
-`release.yml`, `Cargo.toml` and the old project name.
+`release.yml`, `Cargo.toml` and the old project name. A trunk-only repository also needs
+the recipes that check for a `develop` branch (`check-develop`, used by `t-deploy`)
+adapted, and uses its one branch wherever the steps below say `main` or `develop`.
 
 Workstation and repository setup:
 
@@ -682,21 +685,26 @@ Workstation and repository setup:
   and tags must be signed, and the tag run requires GitHub to verify the tag's signature.
 - Secrets for what the tag run publishes (`CRATES_TOKEN` here; `CODECOV_TOKEN` is
   optional).
-- `just protect-branches` **replaces** the protection of the main and develop branches:
-  `main` requires **CI OK** with admins included, both require signed commits and linear
-  history and allow no force pushes or deletions, required pull request reviews are
-  removed, and push restrictions (`main`) and conversation resolution come from the
-  configuration block. Adapt those values first so nothing the project relies on is
-  dropped.
+- `just protect-branches` **replaces** the protection of the main and develop branches.
+  Always: `main` requires **CI OK** (and no other check) with admins included, both
+  require signed commits and linear history and allow no force pushes or deletions,
+  required pull request reviews are removed, and `develop` gets no push restrictions.
+  From the configuration block: push restrictions on `main` and conversation
+  resolution. A project that needs more (reviews, other required checks) must edit
+  `protect()` itself before running it.
 
 Bootstrapping a project:
 
-1. Make sure `main`, `develop` and the work branch exist. Copy and adapt the files
-   above on the work branch and push it; wait for Test & Build, and check that the
-   **CI OK** check appears on the commit.
-2. Land the adapted files on `main` and `develop` (merge the work branch while `main` is
-   not protected yet): GitHub only allows manual runs of a workflow that exists on the
-   default branch, and the release flow starts its candidate run that way.
+1. Make sure `main`, `develop` and the work branch exist, and that `main` is the
+   repository's default branch (`gh api repos/OWNER/REPO --jq .default_branch`). Copy
+   and adapt the files above on the work branch and push it; wait for Test & Build, and
+   check that the **CI OK** check appears on the commit.
+2. Land the adapted files on `main` first (merge the work branch while `main` is not
+   protected yet), then fast-forward `develop` to that `main` commit, and check
+   `git merge-base --is-ancestor origin/main origin/develop`: GitHub only allows manual
+   runs of a workflow that exists on the default branch, the release flow starts its
+   candidate run that way, and the preflight requires `main` to be able to fast-forward
+   to `develop`.
 3. Try the candidate pipeline without releasing anything:
    `gh workflow run release.yml --ref sandbox`. It must pass and keep its
    `release-manifest` artifact.
