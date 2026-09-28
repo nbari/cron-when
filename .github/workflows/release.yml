@@ -11,11 +11,16 @@ permissions:
   contents: write
 
 jobs:
-  # Classifies the ref for the jobs below: `release` for an X.Y.Z tag, `test-tag` for
-  # any other tag (t-* from `just t-deploy` only tests and builds), `dispatch` for a
-  # manual run. A release tag may only publish (GitHub release, crates.io) a commit
-  # that is already on main and has a successful push-triggered "Test & Build" run,
-  # which is what `just deploy` guarantees; a hand-pushed or stray tag stops here.
+  # Classifies the run for the jobs below. `candidate` is a manual (workflow_dispatch)
+  # run, which `just deploy` starts on the release candidate before any tag exists: it
+  # runs the whole pipeline (tests, every build and package, a crates.io dry run) and
+  # uploads the artifacts, but publishes nothing. `release` is an X.Y.Z tag: it builds
+  # nothing and publishes the artifacts of the successful candidate run of the same
+  # commit, so what ships is exactly what was tested and nothing that can fail is left
+  # for after the tag. `test-tag` (other tags, e.g. t-* from `just t-deploy`) tests and
+  # builds only. A release tag may only publish a commit that is on main, carries the
+  # tag's version and passed both Test & Build and its candidate run; a hand-pushed or
+  # stray tag stops here.
   guard:
     name: Release guard
     runs-on: ubuntu-latest
@@ -24,6 +29,8 @@ jobs:
       actions: read
     outputs:
       kind: ${{ steps.classify.outputs.kind }}
+      version: ${{ steps.classify.outputs.version }}
+      candidate_run: ${{ steps.release.outputs.candidate_run }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -33,17 +40,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          kind=dispatch
+          version="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
+          kind=candidate
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             kind=test-tag
-            if [[ "${GITHUB_REF#refs/tags/}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            version="${GITHUB_REF#refs/tags/}"
+            if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               kind=release
             fi
           fi
-          echo "kind=${kind}" >> "$GITHUB_OUTPUT"
-          echo "Ref ${GITHUB_REF} classified as ${kind}."
+          {
+            echo "kind=${kind}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Ref ${GITHUB_REF} classified as ${kind} (version ${version})."
 
-      - name: Require the tagged commit to be on main and to have passed Test & Build
+      - name: Require the tagged commit to be on main and to have passed Test & Build and its candidate run
+        id: release
         if: steps.classify.outputs.kind == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,23 +81,35 @@ jobs:
             echo "::error::${GITHUB_SHA} has no successful Test & Build run; refusing to release ${tag}."
             exit 1
           fi
-          echo "Tag ${tag}: ${GITHUB_SHA} is on main and passed Test & Build (run ${passed})."
+          candidate_run="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow release.yml \
+            --commit "${GITHUB_SHA}" --event workflow_dispatch --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty')"
+          if [[ -z "${candidate_run}" ]]; then
+            echo "::error::${GITHUB_SHA} has no successful candidate run of this workflow; refusing to publish untested artifacts."
+            exit 1
+          fi
+          echo "candidate_run=${candidate_run}" >> "$GITHUB_OUTPUT"
+          echo "Tag ${tag}: ${GITHUB_SHA} is on main, passed Test & Build (run ${passed}) and its candidate run ${candidate_run}."
 
+  # A release tag reuses its candidate run's results, so it neither tests nor builds.
   test:
     needs: guard
+    if: needs.guard.outputs.kind != 'release'
     uses: ./.github/workflows/test.yml
 
   containers:
     needs: guard
+    if: needs.guard.outputs.kind != 'release'
     uses: ./.github/workflows/containers.yml
 
   build:
-    name: Build and release
+    name: Build and package
     runs-on: ${{ matrix.os }}
     needs:
       - guard
       - test
       - containers
+    if: needs.guard.outputs.kind != 'release'
 
     strategy:
       matrix:
@@ -117,8 +142,8 @@ jobs:
           echo "name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
           echo "Package name: $PACKAGE_NAME"
 
-      - name: Get the release version from the tag
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+      - name: Get the release version from the guard
+        run: echo "VERSION=${{ needs.guard.outputs.version }}" >> $GITHUB_ENV
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -197,26 +222,31 @@ jobs:
             echo "ASSET=$dirname.tar.gz" >> $GITHUB_ENV
           fi
 
-      # Only release tags (X.Y.Z) publish; see the guard job
-      - name: Release
-        if: needs.guard.outputs.kind == 'release'
-        uses: softprops/action-gh-release@v3
-        with:
-          draft: false
-          files: |-
-            ${{ env.ASSET }}
-            ${{ env.RPM_ASSET }}
-            ${{ env.DEB_ASSET }}
+      - name: Collect the release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir dist
+          for asset in "${ASSET}" "${RPM_ASSET:-}" "${DEB_ASSET:-}"; do
+            [[ -z "${asset}" ]] || cp "${asset}" dist/
+          done
+          ls -al dist
 
-  publish:
-    name: Publish
+      # The release tag publishes exactly these files, downloaded from this run.
+      - name: Upload the release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.build }}
+          path: dist/*
+          if-no-files-found: error
+
+  # The crate a release uploads is built from source by crates.io; the dry run
+  # proves it packages and builds before anything is released.
+  crate-check:
+    name: Crate dry run
     runs-on: ubuntu-latest
-    needs:
-      - guard
-      - build
-    # Only release tags (X.Y.Z) that passed the guard publish to crates.io
-    if: github.event_name == 'push' && needs.guard.outputs.kind == 'release'
-    continue-on-error: true
+    needs: guard
+    if: needs.guard.outputs.kind != 'release'
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
@@ -224,6 +254,72 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - run: cargo publish --token ${CRATES_TOKEN}
+      - run: cargo publish --dry-run --locked
+
+  # Only release tags (X.Y.Z) that passed the guard publish, and only the artifacts
+  # of their candidate run: nothing is rebuilt after CI.
+  release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    needs: guard
+    if: needs.guard.outputs.kind == 'release'
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download the candidate run's assets
+        uses: actions/download-artifact@v8
+        with:
+          run-id: ${{ needs.guard.outputs.candidate_run }}
+          github-token: ${{ github.token }}
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      - name: Check the assets carry the release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -al dist
+          for asset in dist/*; do
+            if [[ "$(basename "${asset}")" != *"${{ needs.guard.outputs.version }}"* ]]; then
+              echo "::error::${asset} does not carry version ${{ needs.guard.outputs.version }}."
+              exit 1
+            fi
+          done
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: false
+          files: dist/*
+
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    needs:
+      - guard
+      - release
+    # Only release tags (X.Y.Z) that passed the guard publish to crates.io. Safe to
+    # re-run: a version crates.io already has is skipped, not uploaded twice.
+    if: github.event_name == 'push' && needs.guard.outputs.kind == 'release'
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        shell: bash
         env:
           CRATES_TOKEN: ${{ secrets.CRATES_TOKEN }}
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          crate="$(awk -F'"' '/^name = /{print $2; exit}' Cargo.toml)"
+          if curl -sf -o /dev/null -A "${crate}-release" "https://crates.io/api/v1/crates/${crate}/${VERSION}"; then
+            echo "${crate} ${VERSION} is already on crates.io; nothing to publish."
+            exit 0
+          fi
+          cargo publish --locked --token "${CRATES_TOKEN}"

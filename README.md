@@ -550,14 +550,22 @@ never touch each other's), so your checkout stays on a clean `develop` whatever 
 build leaves behind: a signed commit that changes only the version (`Cargo.toml` and
 the package entry in `Cargo.lock`), verified there with a clean `just full-test`. The
 commit is made from the bump as it was before verification, and a verification that
-changes tracked files stops the release. The candidate goes to the scratch `release` branch only, where
-Test & Build runs on it; `develop` and `main` are not touched yet. When that run
-passes, the script signs the tag on the candidate and pushes it to `develop` and
+changes tracked files stops the release. The candidate goes to the scratch `release`
+branch only; `develop` and `main` are not touched yet. Two runs test it in parallel:
+Test & Build, and a manual run of the
+Deploy workflow on `release` that does everything a release does except publishing
+(the tests, every build for Linux x86_64 and arm64, macOS and Windows, the RPM and DEB
+packages and archives, and a `cargo publish --dry-run`), keeping the artifacts. When
+both pass, the script signs the tag on the candidate and pushes it to `develop` and
 `main` together with the tag in one atomic, fast-forward-only push, so the three move
 together or not at all. It then brings `sandbox` in step and deletes `release`. The
-tag starts the Deploy workflow, whose guard publishes the GitHub release and the crate
-only when the tagged commit is on `main`, passed Test & Build, and carries the tag's
-version in `Cargo.toml`.
+tag starts the Deploy workflow once more, but this time it builds nothing: its guard
+checks that the tagged commit is on `main`, carries the tag's version and passed both
+runs, and it publishes the candidate run's artifacts as the GitHub release, then the
+crate, so what ships is byte for byte what was tested. The `X.Y.Z` tag is the only tag
+the flow creates, and only after everything that can fail has passed; if publishing
+itself hits a GitHub or crates.io hiccup, "Re-run failed jobs" on the tag's run
+finishes it (a crate version that is already uploaded is skipped).
 
 `just deploy` is idempotent. A rerun resumes the candidate on `release` when it is
 signed, still sits on the current `develop` and its content is exactly the version
