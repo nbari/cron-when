@@ -651,7 +651,7 @@ described:
 | `scripts/release` | The configuration block at the top: branches (`DEVELOP_BRANCH` equal to `MAIN_BRANCH` for a trunk-only repository), `CI_WORKFLOW`, `REQUIRED_CHECK`, `CANDIDATE_WORKFLOW` (empty when there is nothing to package), `CANDIDATE_MANIFEST`, `MAIN_PUSH_RESTRICTIONS` and `REQUIRE_CONVERSATION_RESOLUTION` (copy the repository's current values), `RELEASE_FILES`, and the `current_version`, `version_at`, `apply_bump` and `verify_locally` functions. Keep the bump cheap and deterministic: it is replayed to check a resumed candidate |
 | `.justfile` | The release recipes above, plus whatever `verify_locally` runs (here `just full-test`) |
 | `.github/workflows/build.yml` | Must run on every branch push, `release` included, and end with the aggregate **CI OK** job listing the jobs that are real gates. Skip per-branch side effects (preview deploys) for `release` |
-| `.github/workflows/release.yml` | Keep the guard (`candidate`, `release`, `recover`, `test-tag`), the manifest job and the GitHub release job; replace the build and package jobs with the project's own, and keep the manifest job's `EXPECTED` inventory in step with the build matrix. Every file of every artifact the release uses must be in the manifest's checksum lists. The `crate` and `publish` jobs are for crates.io: adapt them to the project's destinations (images, registries), or remove them with their manifest entries (`CRATE.SHA256`, `crate` in `ARTIFACTS`) when nothing goes to crates.io |
+| `.github/workflows/release.yml` | Keep the guard (`candidate`, `release`, `recover`, `test-tag`), the manifest job and the GitHub release job; replace the build and package jobs with the project's own, and keep the manifest job's `EXPECTED` inventory in step with the build matrix. Every file of every artifact the release uses must be in the manifest's checksum lists. The `crate` and `publish` jobs are for crates.io: adapt them to the project's destinations (images, registries), or, when nothing goes to crates.io, remove them together with everything in the `manifest` job that depends on them: `crate` in its `needs`, the "Download this run's crate" step, the `RUST` variable, its check and its `release.env` line, the `CRATE.SHA256` line, and `crate` in `ARTIFACTS` |
 | `.github/workflows/coverage.yml` | Third-party uploads never fail the job |
 
 These are project-specific, so copy or replace them as the project needs:
@@ -700,7 +700,8 @@ Bootstrapping a project:
    and adapt the files above on the work branch and push it; wait for Test & Build, and
    check that the **CI OK** check appears on the commit.
 2. Land the adapted files on `main` first (merge the work branch while `main` is not
-   protected yet), then fast-forward `develop` to that `main` commit, and check
+   protected yet), then fast-forward `develop` to that `main` commit (reconcile first if
+   `develop` has commits of its own), and check
    `git merge-base --is-ancestor origin/main origin/develop`: GitHub only allows manual
    runs of a workflow that exists on the default branch, the release flow starts its
    candidate run that way, and the preflight requires `main` to be able to fast-forward
