@@ -52,6 +52,9 @@ STAGING_BRANCH="release"         # scratch branch CI must build (no "/" if CI us
 SYNC_BRANCH="sandbox"            # work branch kept equal to DEVELOP_BRANCH; empty disables the sync
 CI_WORKFLOW="build.yml"          # workflow that runs on every branch push, STAGING_BRANCH included
 REQUIRED_CHECK="CI OK"           # aggregate job in CI_WORKFLOW that branch protection requires
+MAIN_PUSH_RESTRICTIONS='null'    # JSON: who may push to MAIN_BRANCH; null for user repos, org repos
+                                 # may list them, e.g. '{"users":["me"],"teams":[],"apps":[]}'
+REQUIRE_CONVERSATION_RESOLUTION=false # PR setting; keep what the repository already uses
 RELEASE_FILES=(Cargo.toml Cargo.lock)
 
 current_version() {
@@ -259,6 +262,14 @@ prune_stale_worktrees() {
     done <<<"${listing}"
 }
 
+# Tracked files whose content on disk differs from the index. The index is refreshed
+# first: a tool that rewrites a file with the same bytes (npm install does this to
+# package-lock.json) only changes its timestamp, which plain diff-files reports.
+tracked_changes() {
+    git update-index -q --refresh >/dev/null 2>&1 || true
+    git diff-files --name-only
+}
+
 # Whether a commit carries a signature. Presence only: GitHub verifies it against the
 # account's keys when a protected branch requires signed commits.
 is_signed() {
@@ -339,13 +350,13 @@ build_candidate() {
     bump_is_valid "${previous}" "${kind}" "${new}" || die "Expected a ${kind} bump from ${previous}, got ${new}."
     ! tag_exists "${new}" || die "Tag ${new} already exists."
     git add -- "${RELEASE_FILES[@]}"
-    changed="$(git diff-files --name-only)"
+    changed="$(tracked_changes)"
     [[ -z "${changed}" ]] ||
         die "The bump changed files outside RELEASE_FILES (${changed//$'\n'/, }); refusing to stage it."
     bump_tree="$(git write-tree)"
     echo "🧪 Verifying ${new} locally before staging it..."
     verify_locally
-    changed="$({ git diff-index --cached --name-only "${bump_tree}"; git diff-files --name-only; } | sort -u)"
+    changed="$({ git diff-index --cached --name-only "${bump_tree}"; tracked_changes; } | sort -u)"
     [[ -z "${changed}" ]] ||
         die "Verification changed tracked files (${changed//$'\n'/, }); the candidate must hold the bump alone."
     # Branch protection requires signed commits: sign explicitly, whatever commit.gpgsign says.
@@ -659,20 +670,26 @@ status() {
 # every release push once admins are enforced). DEVELOP_BRANCH keeps signed, linear
 # history without required checks (MAIN_BRANCH is the gate); STAGING_BRANCH stays
 # unprotected because the release flow replaces it. No pull requests are required.
+# Push restrictions (MAIN_BRANCH only) and conversation resolution come from the
+# configuration, so an organization repository keeps who may push.
 protect() {
     local repo
+    jq -e 'type == "null" or type == "object"' <<<"${MAIN_PUSH_RESTRICTIONS}" >/dev/null 2>&1 ||
+        die "MAIN_PUSH_RESTRICTIONS must be null or a JSON object (got '${MAIN_PUSH_RESTRICTIONS}')."
+    [[ "${REQUIRE_CONVERSATION_RESOLUTION}" =~ ^(true|false)$ ]] ||
+        die "REQUIRE_CONVERSATION_RESOLUTION must be true or false (got '${REQUIRE_CONVERSATION_RESOLUTION}')."
     repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
     gh api -X PUT "repos/${repo}/branches/${MAIN_BRANCH}/protection" --input - >/dev/null <<EOF
 {
   "required_status_checks": {"strict": false, "checks": [{"context": "${REQUIRED_CHECK}", "app_id": 15368}]},
   "enforce_admins": true,
   "required_pull_request_reviews": null,
-  "restrictions": null,
+  "restrictions": ${MAIN_PUSH_RESTRICTIONS},
   "required_linear_history": true,
   "allow_force_pushes": false,
   "allow_deletions": false,
   "block_creations": false,
-  "required_conversation_resolution": false,
+  "required_conversation_resolution": ${REQUIRE_CONVERSATION_RESOLUTION},
   "lock_branch": false,
   "allow_fork_syncing": false
 }
@@ -688,7 +705,7 @@ EOF
   "allow_force_pushes": false,
   "allow_deletions": false,
   "block_creations": false,
-  "required_conversation_resolution": false,
+  "required_conversation_resolution": ${REQUIRE_CONVERSATION_RESOLUTION},
   "lock_branch": false,
   "allow_fork_syncing": false
 }
