@@ -539,31 +539,34 @@ cargo run -- "*/5 * * * *"
 
 ### Releasing
 
-Releases promote the exact commit that passed CI. Work, including dependency
-updates (`just update`), lands on `sandbox`; when its **Test & Build** run is green,
-merge it into `develop` and run `just deploy` (or `just deploy-minor` /
-`just deploy-major`) from a clean `develop`. `scripts/release` first checks
-everything that could fail later (`main` can fast-forward to `develop`, the tag is
-free, `gh` is authenticated, git can sign), then pushes a bump commit that changes
-only the version (`Cargo.toml` and the package entry in `Cargo.lock`) after a clean
-local `just full-test`. It waits for the Test & Build run of that exact commit and
-only then signs the tag on it and pushes it to `main` together with the tag in one
-atomic, fast-forward-only push, so `main`, the tag and the tested commit are always
-the same. The tag starts the Deploy workflow, whose guard publishes the GitHub
-release and the crate only when the tagged commit is on `main` and passed Test &
-Build. `sandbox` follows `develop` throughout: right after the bump, and again after
-the release, it moves to `develop` when that is a fast-forward or when its content
-was squash-merged (the old tip is kept locally as `refs/backup/sandbox/<tip>`); work
-on `sandbox` that `develop` lacks is never touched.
+Releases stage the release commit, let CI test it, and only then promote exactly that
+commit. Work, including dependency updates (`just update`), lands on `sandbox`; when
+its **Test & Build** run is green, merge it into `develop` and run `just deploy` (or
+`just deploy-minor` / `just deploy-major`) from a clean `develop`. `scripts/release`
+first checks everything that could fail later (`main` can fast-forward to `develop`,
+`gh` is authenticated, git can sign, the settings are valid), then builds the
+candidate on a detached HEAD: a commit that changes only the version (`Cargo.toml`
+and the package entry in `Cargo.lock`), verified locally with a clean
+`just full-test`. The candidate goes to the scratch `release` branch only, where
+Test & Build runs on it; `develop` and `main` are not touched yet. When that run
+passes, the script signs the tag on the candidate and pushes it to `develop` and
+`main` together with the tag in one atomic, fast-forward-only push, so the three move
+together or not at all. It then brings `sandbox` in step and deletes `release`. The
+tag starts the Deploy workflow, whose guard publishes the GitHub release and the crate
+only when the tagged commit is on `main` and passed Test & Build.
 
-While it waits, the script polls GitHub every 30 seconds
-(`RELEASE_POLL_SECONDS`), for at most an hour per attempt (`RELEASE_CI_TIMEOUT`).
-If a job fails, it keeps waiting 15 minutes (`RELEASE_RERUN_WAIT`): click
-"Re-run failed jobs" in GitHub and the release continues by itself once that attempt
-passes. Whenever a release stops midway (CI failed and was not re-run, the network
-or SSH connection dropped, the bump's push failed, Ctrl-C), the bumped version has
-no tag yet and running `just deploy` again finishes it instead of bumping a second
-time (`just deploy-current` does the same explicitly). `just release-preflight`
-runs only the checks. Branch protection is kept as code: `just protect-branches`
-makes `main` accept only commits whose aggregate **CI OK** check passed, admins
-included, with signed commits and linear history.
+`just deploy` is idempotent. A rerun resumes the candidate on `release` when it still
+sits on the current `develop` (no rebuild, no new bump), replaces it when `develop`
+has moved on, and reports "nothing new to release" when `develop` is already the last
+release. A failed or interrupted release leaves `develop` and `main` exactly as they
+were: re-run the failed jobs, or fix on `sandbox` and merge into `develop`, then run
+`just deploy` again. While it waits, the script polls GitHub every 30 seconds
+(`RELEASE_POLL_SECONDS`), for at most an hour per attempt (`RELEASE_CI_TIMEOUT`), and
+after a failure keeps waiting 15 minutes (`RELEASE_RERUN_WAIT`) so "Re-run failed
+jobs" in GitHub lets the release continue by itself. With `RELEASE_NO_WAIT=1` it
+stops once the candidate is staged (or while CI still runs), and a later
+`just deploy` finishes the release. `just release-status` shows `develop`, `main`,
+the staged candidate and its CI run without changing anything, and
+`just release-preflight` runs only the checks. Branch protection is kept as code:
+`just protect-branches` makes `main` accept only commits whose aggregate **CI OK**
+check passed, admins included, with signed commits and linear history.

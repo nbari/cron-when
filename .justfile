@@ -88,10 +88,11 @@ check-develop:
     fi
     echo "✅ On develop branch"
 
-# Releases promote the exact commit that passed CI; see scripts/release for the flow.
-# Every deploy recipe is safe to rerun: an unreleased bump is finished, not repeated.
+# Releases stage the bump on the `release` branch, let CI test that exact commit, then
+# move develop, main and the tag together; see scripts/release. Every deploy recipe is
+# idempotent: rerunning it resumes the staged candidate or says nothing is left to do.
 
-# Deploy: bump patch, wait for CI on that commit, then tag it and fast-forward main
+# Deploy: stage a patch bump, wait for CI on it, then release it
 deploy:
     @scripts/release deploy patch
 
@@ -103,25 +104,17 @@ deploy-minor:
 deploy-major:
     @scripts/release deploy major
 
-# Release the current version without bumping (also resumes an interrupted deploy)
+# Release develop's version as is when it has no tag yet (no new bump)
 deploy-current:
     @scripts/release deploy current
 
-# Bump the version and push it to develop without releasing
-bump:
-    @scripts/release bump patch
-
-# Bump minor version without releasing
-bump-minor:
-    @scripts/release bump minor
-
-# Bump major version without releasing
-bump-major:
-    @scripts/release bump major
+# Show where a release stands: develop, main, the staged candidate and its CI run
+release-status:
+    @scripts/release status
 
 # Check everything a release needs without changing anything
-release-preflight kind="patch":
-    @scripts/release preflight {{kind}}
+release-preflight:
+    @scripts/release preflight
 
 # Apply the branch protection the release flow relies on (main requires "CI OK")
 protect-branches:

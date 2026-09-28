@@ -1,42 +1,45 @@
 #!/usr/bin/env bash
-# Release flow: promote the exact commit that passed CI.
+# Release flow: stage the release commit, let CI test it, then promote exactly that commit.
 #
 # Flow overview (`scripts/release deploy <patch|minor|major|current>`)
-#   1. Preflight, before anything changes: a clean DEVELOP_BRANCH equal to its
-#      origin copy, MAIN_BRANCH able to fast-forward to it, a free tag for the
-#      version being released, an authenticated gh, and a working signing setup
-#      (a throwaway local tag exercises the key or agent for real).
-#   2. Bump: change nothing but the version (RELEASE_FILES), run the local
-#      verification as a fast fail, commit "bump version to X.Y.Z" and push it.
-#   3. Gate: wait for the push-triggered run of CI_WORKFLOW for exactly that commit.
-#      After a failure it keeps waiting RELEASE_RERUN_WAIT seconds, so "Re-run
-#      failed jobs" in GitHub lets the release continue on its own.
-#   4. Promote: sign the tag on that commit and push it to MAIN_BRANCH together with
-#      the tag in one atomic, fast-forward-only push. MAIN_BRANCH, the tag and the
-#      tested commit are always the same; no merge happens after testing.
-#   5. Optionally keep SYNC_BRANCH (for example a personal work branch) in step.
+#   1. Preflight, before anything changes: a clean DEVELOP_BRANCH equal to its origin
+#      copy, MAIN_BRANCH able to fast-forward to it, an authenticated gh, valid
+#      settings and a working signing setup (a throwaway tag exercises the key).
+#   2. Candidate: on a detached HEAD, bump the version (RELEASE_FILES only), run the
+#      local verification and commit "bump version to X.Y.Z". The commit goes to
+#      STAGING_BRANCH only; DEVELOP_BRANCH and MAIN_BRANCH are not touched yet.
+#   3. Gate: wait for the push-triggered CI_WORKFLOW run of exactly that commit. After
+#      a failure it keeps waiting RELEASE_RERUN_WAIT seconds for "Re-run failed jobs".
+#   4. Promote: sign the tag on the candidate and push it to DEVELOP_BRANCH and
+#      MAIN_BRANCH together with the tag in one atomic, fast-forward-only push, so the
+#      three move together or not at all. Then keep SYNC_BRANCH in step and delete
+#      STAGING_BRANCH.
 #
-# The flow is safe to rerun: an untagged current version means an earlier run
-# stopped after its bump (CI red, network or SSH dropped, Ctrl-C), so every deploy
-# finishes that version instead of bumping again, and a bump commit whose push
-# failed is pushed first. Server-side, `scripts/release protect` makes GitHub refuse
-# any push to MAIN_BRANCH whose commit has not passed REQUIRED_CHECK, admins
-# included, and the release workflow's guard refuses to publish a tag that is not
-# on MAIN_BRANCH with a green CI run.
+# The release state lives only on STAGING_BRANCH, so `deploy` is idempotent: it
+# resumes a valid candidate (one commit on the current DEVELOP_BRANCH, named "bump
+# version to X.Y.Z", touching only RELEASE_FILES, X.Y.Z untagged) instead of building
+# another, replaces a stale one, and says "nothing to release" when DEVELOP_BRANCH
+# is the last release. A failed or interrupted release leaves DEVELOP_BRANCH and
+# MAIN_BRANCH exactly as they were: fix on the work branch, merge, run it again.
+# Server-side, `protect` makes GitHub refuse any push to MAIN_BRANCH whose commit has
+# not passed REQUIRED_CHECK (admins included), and the release workflow's guard
+# refuses to publish a tag that is not on MAIN_BRANCH with a green CI run.
 #
 # Usage: scripts/release deploy <patch|minor|major|current>
-#        scripts/release bump <patch|minor|major>
-#        scripts/release preflight <patch|minor|major|current>
+#        scripts/release status
+#        scripts/release preflight
 #        scripts/release protect
-# Tuning: RELEASE_POLL_SECONDS (30), RELEASE_CI_TIMEOUT (3600),
-#         RELEASE_RERUN_WAIT (900), all in seconds.
+# Tuning: RELEASE_POLL_SECONDS (30), RELEASE_CI_TIMEOUT (3600), RELEASE_RERUN_WAIT
+#         (900), all in seconds; RELEASE_NO_WAIT=1 stops after staging (or while CI
+#         still runs) instead of waiting, so a later deploy finishes the release.
 set -euo pipefail
 
 # --- Project configuration: the only part to adapt when copying this script ---
-DEVELOP_BRANCH="develop"
+DEVELOP_BRANCH="develop"         # set equal to MAIN_BRANCH for a trunk-only repository
 MAIN_BRANCH="main"
+STAGING_BRANCH="release"         # scratch branch CI must build (no "/" if CI uses branches: '*')
 SYNC_BRANCH="sandbox"            # work branch kept equal to DEVELOP_BRANCH; empty disables the sync
-CI_WORKFLOW="build.yml"          # workflow that runs on every branch push
+CI_WORKFLOW="build.yml"          # workflow that runs on every branch push, STAGING_BRANCH included
 REQUIRED_CHECK="CI OK"           # aggregate job in CI_WORKFLOW that branch protection requires
 RELEASE_FILES=(Cargo.toml Cargo.lock)
 
@@ -50,7 +53,7 @@ apply_bump() {
     cargo update --workspace
 }
 
-# Local fast fail before the bump is pushed; CI on that commit is the real gate.
+# Local fast fail before the candidate is pushed; CI on that commit is the real gate.
 verify_locally() {
     cargo clean
     just full-test
@@ -60,6 +63,7 @@ verify_locally() {
 POLL_SECONDS="${RELEASE_POLL_SECONDS:-30}"
 CI_TIMEOUT="${RELEASE_CI_TIMEOUT:-3600}"
 RERUN_WAIT="${RELEASE_RERUN_WAIT:-900}"
+NO_WAIT="${RELEASE_NO_WAIT:-0}"
 
 die() {
     echo "❌ $*" >&2
@@ -85,13 +89,16 @@ next_version() {
         patch) echo "${major}.${minor}.$((patch + 1))" ;;
         minor) echo "${major}.$((minor + 1)).0" ;;
         major) echo "$((major + 1)).0.0" ;;
-        current) current_version ;;
         *) die "Unknown release kind '${kind}' (patch, minor, major or current)." ;;
     esac
 }
 
 tag_exists() {
     git rev-parse -q --verify "refs/tags/$1" >/dev/null 2>&1
+}
+
+remote_tip() {
+    git rev-parse -q --verify "refs/remotes/origin/$1" 2>/dev/null || true
 }
 
 # Canonical numbers only (no leading zeros, at most six digits): the gate uses them in
@@ -103,42 +110,194 @@ check_seconds() {
     fi
 }
 
-# Everything a release needs, checked before anything is changed or pushed. With
-# mode "unpushed-bump", deploy() has recognized a committed-but-unpushed bump and
-# checks everything else before pushing it; only then may HEAD be one commit ahead.
+# Everything a release needs, checked before anything is changed or pushed.
 preflight() {
-    local kind=$1 mode=${2:-} version probe
-    version="$(next_version "${kind}")"
+    local probe
+    if ! git symbolic-ref -q HEAD >/dev/null; then
+        die "HEAD is detached (an interrupted candidate build?); run: git checkout ${DEVELOP_BRANCH}"
+    fi
     [[ "$(git branch --show-current)" == "${DEVELOP_BRANCH}" ]] ||
         die "Not on ${DEVELOP_BRANCH} (currently on: $(git branch --show-current))."
     [[ -z "$(git status --porcelain)" ]] || die "Working directory is not clean; commit or stash first."
     for tool in cargo jq gh git; do
         command -v "${tool}" >/dev/null 2>&1 || die "${tool} is required."
     done
-    if [[ "${kind}" != "current" ]] && ! cargo set-version -h >/dev/null 2>&1; then
-        die "cargo set-version not found; install cargo-edit (cargo install cargo-edit)."
-    fi
+    cargo set-version -h >/dev/null 2>&1 || die "cargo set-version not found; install cargo-edit (cargo install cargo-edit)."
     check_seconds RELEASE_POLL_SECONDS "${POLL_SECONDS}" 5
     check_seconds RELEASE_CI_TIMEOUT "${CI_TIMEOUT}" 60
     check_seconds RELEASE_RERUN_WAIT "${RERUN_WAIT}" 0
+    [[ "${NO_WAIT}" =~ ^[01]$ ]] || die "RELEASE_NO_WAIT must be 0 or 1 (got '${NO_WAIT}')."
 
-    git fetch --quiet --tags origin
-    if [[ "${mode}" != "unpushed-bump" && "$(git rev-parse HEAD)" != "$(git rev-parse "origin/${DEVELOP_BRANCH}")" ]]; then
+    git fetch --quiet --prune --tags origin
+    [[ "$(git rev-parse HEAD)" == "$(remote_tip "${DEVELOP_BRANCH}")" ]] ||
         die "${DEVELOP_BRANCH} differs from origin/${DEVELOP_BRANCH}; pull or push it first."
-    fi
     git merge-base --is-ancestor "origin/${MAIN_BRANCH}" HEAD ||
         die "origin/${MAIN_BRANCH} has commits ${DEVELOP_BRANCH} lacks, so it cannot fast-forward; merge it into ${DEVELOP_BRANCH} first."
     gh auth status >/dev/null 2>&1 || die "gh must be authenticated to follow CI (gh auth login)."
-    ! tag_exists "${version}" || die "Tag ${version} already exists."
     probe="release-signing-probe-$$"
     git tag -s "${probe}" -m "signing probe" HEAD >/dev/null 2>&1 ||
         die "git could not sign a tag; check the signing key or agent."
     git tag -d "${probe}" >/dev/null
     if [[ -n "${SSH_CONNECTION:-}" && -z "${HERDR_ENV:-}" && -z "${TMUX:-}" ]]; then
-        echo "⚠️  On SSH outside Herdr/tmux: a dropped connection stops this release midway."
-        echo "   It is safe to rerun it afterwards; running it inside a multiplexer avoids that."
+        echo "⚠️  On SSH outside Herdr/tmux: a dropped connection stops the wait; rerun the deploy to resume."
     fi
-    echo "✅ Release preflight passed for ${version}"
+    echo "✅ Release preflight passed"
+}
+
+# A valid candidate: one commit directly on base, named "bump version to <version>",
+# touching only RELEASE_FILES, for a version that has no tag yet.
+candidate_is_valid() {
+    local sha=$1 base=$2 version=$3
+    [[ -n "${sha}" ]] || return 1
+    [[ "$(git rev-parse -q --verify "${sha}^" || true)" == "${base}" ]] || return 1
+    [[ "$(git log -1 --format=%s "${sha}")" == "bump version to ${version}" ]] || return 1
+    [[ -z "$(git diff --name-only "${base}" "${sha}" | grep -vxF -f <(printf '%s\n' "${RELEASE_FILES[@]}") || true)" ]] || return 1
+    ! tag_exists "${version}"
+}
+
+# Build the candidate on a detached HEAD and push it to STAGING_BRANCH only (with a
+# lease on whatever it held before). DEVELOP_BRANCH, locally and on origin, stays as
+# it was; the working tree returns to it afterwards, also on failure or Ctrl-C.
+CANDIDATE=""
+build_candidate() {
+    local kind=$1 previous_staging=$2 previous new
+    previous="$(current_version)"
+    git checkout --quiet --detach
+    trap 'git checkout --quiet --force "${DEVELOP_BRANCH}" 2>/dev/null || true' EXIT
+    trap 'exit 130' INT TERM
+    echo "🔧 Building the ${kind} candidate from ${previous}..."
+    apply_bump "${kind}"
+    new="$(current_version)"
+    bump_is_valid "${previous}" "${kind}" "${new}" || die "Expected a ${kind} bump from ${previous}, got ${new}."
+    ! tag_exists "${new}" || die "Tag ${new} already exists."
+    echo "🧪 Verifying ${new} locally before staging it..."
+    verify_locally
+    git add -- "${RELEASE_FILES[@]}"
+    [[ -z "$(git status --porcelain --untracked-files=no | grep -v '^M  ' || true)" ]] ||
+        die "The bump changed files outside RELEASE_FILES; refusing to commit them."
+    git commit --quiet -m "bump version to ${new}"
+    CANDIDATE="$(git rev-parse HEAD)"
+    git push --quiet --force-with-lease="${STAGING_BRANCH}:${previous_staging}" \
+        origin "${CANDIDATE}:refs/heads/${STAGING_BRANCH}" ||
+        die "Could not push the candidate to ${STAGING_BRANCH} (it changed meanwhile?); run the deploy again."
+    git checkout --quiet --force "${DEVELOP_BRANCH}"
+    trap - EXIT INT TERM
+    echo "✅ Staged ${new} as ${CANDIDATE:0:12} on ${STAGING_BRANCH}"
+}
+
+# Look up the push-triggered CI_WORKFLOW run of a commit; prints its id or nothing.
+find_run() {
+    gh run list --workflow "${CI_WORKFLOW}" --commit "$1" --event push --limit 1 \
+        --json databaseId --jq '.[0].databaseId // empty'
+}
+
+# Wait for the push-triggered CI_WORKFLOW run of exactly this commit; succeed only if
+# it passes (or a re-run of its failed jobs passes within RERUN_WAIT). With
+# RELEASE_NO_WAIT=1 it returns 2 while the run is still pending.
+gate() {
+    local sha=$1 deadline appear_deadline run_id="" listed offline=0 url state status conclusion attempt
+    local failed_at="" last="" window
+    deadline=$((SECONDS + CI_TIMEOUT))
+    appear_deadline=$((SECONDS + 300))
+    if ((RERUN_WAIT >= 60)); then window="$((RERUN_WAIT / 60)) minutes"; else window="${RERUN_WAIT} seconds"; fi
+
+    echo "⏳ Waiting for the ${CI_WORKFLOW} run of ${sha:0:12}..."
+    while [[ -z "${run_id}" ]]; do
+        if listed="$(find_run "${sha}" 2>/dev/null)"; then
+            offline=0
+            run_id="${listed}"
+            if [[ -z "${run_id}" ]] && ((SECONDS >= appear_deadline)); then
+                die "No ${CI_WORKFLOW} run appeared for ${sha} within 5 minutes."
+            fi
+        else
+            ((offline)) || echo "⚠️  GitHub unreachable; still waiting (retrying every 10s)..."
+            offline=1
+            appear_deadline=$((SECONDS + 300))
+            ((SECONDS < deadline)) || die "GitHub stayed unreachable; rerun the deploy when back online."
+        fi
+        if [[ -z "${run_id}" ]]; then
+            ((NO_WAIT == 0)) || return 2
+            sleep 10
+        fi
+    done
+    url="$(gh run view "${run_id}" --json url --jq .url 2>/dev/null || echo "run ${run_id}")"
+    echo "🔗 ${url}"
+
+    while true; do
+        state="$(gh run view "${run_id}" --json status,conclusion,attempt \
+            --jq '"\(.status) \(.conclusion // "-") \(.attempt)"' 2>/dev/null || echo "unknown - ?")"
+        read -r status conclusion attempt <<<"${state}"
+        if [[ "${status}" == "unknown" ]]; then
+            [[ "${last}" == "unknown" ]] || echo "⚠️  GitHub unreachable; still waiting (retrying every ${POLL_SECONDS}s)..."
+            last="unknown"
+            ((SECONDS < deadline)) || die "GitHub stayed unreachable; rerun the deploy when back online."
+            sleep "${POLL_SECONDS}"
+            continue
+        fi
+        if [[ "${status} ${attempt}" != "${last}" ]]; then
+            echo "   CI: ${status} (attempt ${attempt})"
+            last="${status} ${attempt}"
+        fi
+        if [[ "${status}" == "completed" ]]; then
+            if [[ "${conclusion}" == "success" ]]; then
+                echo "✅ CI passed for ${sha:0:12}"
+                return 0
+            fi
+            ((NO_WAIT == 0)) || die "CI finished with '${conclusion}': ${url}. Re-run the failed jobs or fix forward, then run the deploy again."
+            if [[ -z "${failed_at}" ]]; then
+                failed_at="${SECONDS}"
+                echo "❌ CI finished with '${conclusion}': ${url}" >&2
+                echo "   Re-run the failed jobs in GitHub within ${window} and this release" >&2
+                echo "   continues by itself; Ctrl-C to stop waiting." >&2
+            elif ((SECONDS - failed_at >= RERUN_WAIT)); then
+                echo "❌ No re-run started within ${window}; nothing was released." >&2
+                die "Re-run the jobs, or fix on the work branch and merge into ${DEVELOP_BRANCH}; then run the deploy again."
+            fi
+        elif [[ -n "${failed_at}" ]]; then
+            echo "🔁 Re-run started; following attempt ${attempt}"
+            failed_at=""
+            deadline=$((SECONDS + CI_TIMEOUT))
+        elif ((NO_WAIT == 1)); then
+            return 2
+        fi
+        if [[ -z "${failed_at}" ]] && ((SECONDS >= deadline)); then
+            die "CI did not finish within ${CI_TIMEOUT}s (${url}); when it passes, run the deploy again."
+        fi
+        sleep "${POLL_SECONDS}"
+    done
+}
+
+# Tag the CI-verified commit and move MAIN_BRANCH and DEVELOP_BRANCH to it in one
+# atomic push; both updates must be fast-forwards, so if either branch moved since the
+# candidate was built the whole push is rejected and nothing is released.
+promote() {
+    local version=$1 sha=$2 refs
+    echo "🏷️  Creating signed tag ${version} on ${sha:0:12}..."
+    git tag -s "${version}" "${sha}" -m "Release version ${version}"
+    refs=("${sha}:refs/heads/${MAIN_BRANCH}")
+    if [[ "${DEVELOP_BRANCH}" != "${MAIN_BRANCH}" && "$(remote_tip "${DEVELOP_BRANCH}")" != "${sha}" ]]; then
+        refs+=("${sha}:refs/heads/${DEVELOP_BRANCH}")
+    fi
+    refs+=("refs/tags/${version}")
+    echo "⬆️  Pushing ${sha:0:12} to ${MAIN_BRANCH}$([[ ${#refs[@]} -eq 3 ]] && echo " and ${DEVELOP_BRANCH}") with tag ${version} (atomic)..."
+    if ! git push --atomic origin "${refs[@]}"; then
+        git tag -d "${version}" >/dev/null 2>&1 || true
+        die "Push rejected; nothing was released. If ${DEVELOP_BRANCH} moved meanwhile, run the deploy again for a fresh candidate."
+    fi
+    git fetch --quiet origin
+    git merge --quiet --ff-only "origin/${DEVELOP_BRANCH}"
+    if [[ "${DEVELOP_BRANCH}" != "${MAIN_BRANCH}" ]] && git show-ref --verify --quiet "refs/heads/${MAIN_BRANCH}"; then
+        if git merge-base --is-ancestor "${MAIN_BRANCH}" "origin/${MAIN_BRANCH}"; then
+            git branch -f "${MAIN_BRANCH}" "origin/${MAIN_BRANCH}" >/dev/null
+        else
+            echo "⚠️  Local ${MAIN_BRANCH} has commits origin/${MAIN_BRANCH} lacks; left it untouched." >&2
+        fi
+    fi
+    if [[ "${DEVELOP_BRANCH}" == "${MAIN_BRANCH}" ]]; then
+        echo "✅ Released ${version}: ${MAIN_BRANCH} and the tag point at ${sha:0:12}"
+    else
+        echo "✅ Released ${version}: ${MAIN_BRANCH}, ${DEVELOP_BRANCH} and the tag point at ${sha:0:12}"
+    fi
 }
 
 # Keep SYNC_BRANCH equal to DEVELOP_BRANCH: fast-forward it, or move it with
@@ -183,166 +342,86 @@ sync_branch() {
     return 0
 }
 
-# Bump the version on DEVELOP_BRANCH and push a commit that changes only RELEASE_FILES.
-bump() {
-    local kind=$1 previous new status
-    [[ "$(git branch --show-current)" == "${DEVELOP_BRANCH}" ]] || die "Not on ${DEVELOP_BRANCH}."
-    [[ -z "$(git status --porcelain)" ]] || die "Working directory is not clean; commit or stash first."
-    previous="$(current_version)"
-    echo "ℹ️  Current version: ${previous}"
-    trap 'status=$?; if ((status != 0)); then echo "↩️  Restoring version files after failure..."; git checkout HEAD -- "${RELEASE_FILES[@]}" >/dev/null 2>&1 || true; fi' EXIT
-    echo "🔧 Bumping ${kind} version..."
-    apply_bump "${kind}"
-    new="$(current_version)"
-    echo "📝 New version: ${new}"
-    bump_is_valid "${previous}" "${kind}" "${new}" || die "Expected a ${kind} bump from ${previous}, got ${new}."
-    git fetch --quiet --tags origin
-    ! tag_exists "${new}" || die "Tag ${new} already exists."
-    echo "🧪 Verifying locally before pushing..."
-    verify_locally
-    git add -- "${RELEASE_FILES[@]}"
-    [[ -z "$(git status --porcelain --untracked-files=no | grep -v '^M  ' || true)" ]] ||
-        die "The bump changed files outside RELEASE_FILES; refusing to commit them."
-    git commit -m "bump version to ${new}"
-    git push origin "${DEVELOP_BRANCH}"
-    trap - EXIT
-    echo "✅ Version bumped and pushed to ${DEVELOP_BRANCH}"
-    sync_branch
-}
-
-# Wait for the push-triggered CI_WORKFLOW run of exactly this commit; succeed only if
-# it passes (or a re-run of its failed jobs passes within RERUN_WAIT).
-gate() {
-    local sha=$1 deadline appear_deadline run_id="" listed offline=0 url state status conclusion attempt
-    local failed_at="" last="" window
-    deadline=$((SECONDS + CI_TIMEOUT))
-    appear_deadline=$((SECONDS + 300))
-    if ((RERUN_WAIT >= 60)); then window="$((RERUN_WAIT / 60)) minutes"; else window="${RERUN_WAIT} seconds"; fi
-
-    echo "⏳ Waiting for the ${CI_WORKFLOW} run of ${sha:0:12}..."
-    while [[ -z "${run_id}" ]]; do
-        if listed="$(gh run list --workflow "${CI_WORKFLOW}" --commit "${sha}" --event push --limit 1 \
-            --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null)"; then
-            offline=0
-            run_id="${listed}"
-            if [[ -z "${run_id}" ]] && ((SECONDS >= appear_deadline)); then
-                die "No ${CI_WORKFLOW} run appeared for ${sha} within 5 minutes."
-            fi
-        else
-            ((offline)) || echo "⚠️  GitHub unreachable; still waiting (retrying every 10s)..."
-            offline=1
-            appear_deadline=$((SECONDS + 300))
-            ((SECONDS < deadline)) || die "GitHub stayed unreachable; rerun the deploy when back online."
-        fi
-        [[ -n "${run_id}" ]] || sleep 10
-    done
-    url="$(gh run view "${run_id}" --json url --jq .url 2>/dev/null || echo "run ${run_id}")"
-    echo "🔗 ${url}"
-
-    while true; do
-        state="$(gh run view "${run_id}" --json status,conclusion,attempt \
-            --jq '"\(.status) \(.conclusion // "-") \(.attempt)"' 2>/dev/null || echo "unknown - ?")"
-        read -r status conclusion attempt <<<"${state}"
-        if [[ "${status}" == "unknown" ]]; then
-            [[ "${last}" == "unknown" ]] || echo "⚠️  GitHub unreachable; still waiting (retrying every ${POLL_SECONDS}s)..."
-            last="unknown"
-            ((SECONDS < deadline)) || die "GitHub stayed unreachable; rerun the deploy when back online."
-            sleep "${POLL_SECONDS}"
-            continue
-        fi
-        if [[ "${status} ${attempt}" != "${last}" ]]; then
-            echo "   CI: ${status} (attempt ${attempt})"
-            last="${status} ${attempt}"
-        fi
-        if [[ "${status}" == "completed" ]]; then
-            if [[ "${conclusion}" == "success" ]]; then
-                echo "✅ CI passed for ${sha:0:12}"
-                return 0
-            fi
-            if [[ -z "${failed_at}" ]]; then
-                failed_at="${SECONDS}"
-                echo "❌ CI finished with '${conclusion}': ${url}" >&2
-                echo "   Re-run the failed jobs in GitHub within ${window} and this release" >&2
-                echo "   continues by itself; Ctrl-C to stop waiting." >&2
-            elif ((SECONDS - failed_at >= RERUN_WAIT)); then
-                echo "❌ No re-run started within ${window}; nothing was released." >&2
-                die "Re-run the jobs or fix forward on ${DEVELOP_BRANCH}, then run the deploy again."
-            fi
-        elif [[ -n "${failed_at}" ]]; then
-            echo "🔁 Re-run started; following attempt ${attempt}"
-            failed_at=""
-            deadline=$((SECONDS + CI_TIMEOUT))
-        fi
-        if [[ -z "${failed_at}" ]] && ((SECONDS >= deadline)); then
-            die "CI did not finish within ${CI_TIMEOUT}s (${url}); when it passes, run the deploy again."
-        fi
-        sleep "${POLL_SECONDS}"
-    done
-}
-
-# Tag the CI-verified commit and move MAIN_BRANCH to it in one atomic push.
-promote() {
-    local version=$1 sha=$2
-    echo "🏷️  Creating signed tag ${version} on ${sha:0:12}..."
-    git tag -s "${version}" "${sha}" -m "Release version ${version}"
-    echo "⬆️  Pushing ${sha:0:12} to ${MAIN_BRANCH} together with tag ${version} (atomic)..."
-    if ! git push --atomic origin "${sha}:refs/heads/${MAIN_BRANCH}" "refs/tags/${version}"; then
-        git tag -d "${version}" >/dev/null 2>&1 || true
-        die "Push rejected; nothing was released and the local tag was removed."
-    fi
-    git fetch --quiet origin
-    if git show-ref --verify --quiet "refs/heads/${MAIN_BRANCH}" && [[ "$(git branch --show-current)" != "${MAIN_BRANCH}" ]]; then
-        if git merge-base --is-ancestor "${MAIN_BRANCH}" "origin/${MAIN_BRANCH}"; then
-            git branch -f "${MAIN_BRANCH}" "origin/${MAIN_BRANCH}" >/dev/null
-        else
-            echo "⚠️  Local ${MAIN_BRANCH} has commits origin/${MAIN_BRANCH} lacks; left it untouched." >&2
-        fi
-    fi
-    echo "✅ Released ${version}: ${MAIN_BRANCH} and the tag point at ${sha:0:12}"
-}
-
 deploy() {
-    local kind=$1 current version sha
-    git fetch --quiet --tags origin
+    local kind=$1 base current version staging candidate="" rc
+    preflight
+    base="$(git rev-parse HEAD)"
     current="$(current_version)"
+    staging="$(remote_tip "${STAGING_BRANCH}")"
 
-    # A bump committed but never pushed (its push failed): after the full preflight,
-    # which then tolerates exactly this commit, push it.
-    if [[ "$(git branch --show-current)" == "${DEVELOP_BRANCH}" ]] && ! tag_exists "${current}" &&
-        [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/${DEVELOP_BRANCH}")" ]] &&
-        [[ "$(git rev-parse -q --verify HEAD^ || true)" == "$(git rev-parse "origin/${DEVELOP_BRANCH}")" ]] &&
-        [[ "$(git log -1 --format=%s HEAD)" == "bump version to ${current}" ]] &&
-        [[ -z "$(git diff --name-only HEAD^ HEAD | grep -vxF -f <(printf '%s\n' "${RELEASE_FILES[@]}") || true)" ]]; then
-        echo "ℹ️  The bump to ${current} was committed but never pushed; checking, then pushing it."
-        preflight current unpushed-bump
-        git push origin "${DEVELOP_BRANCH}"
-        sync_branch
+    if tag_exists "${current}"; then
+        if [[ "$(git rev-parse "refs/tags/${current}^{commit}")" == "${base}" ]]; then
+            echo "✅ ${DEVELOP_BRANCH} is release ${current}; nothing new to release."
+            return 0
+        fi
+        [[ "${kind}" != "current" ]] ||
+            die "${current} is already released; use deploy, deploy-minor or deploy-major for a new version."
+        version="$(next_version "${kind}")"
+        ! tag_exists "${version}" || die "Tag ${version} already exists."
+        if candidate_is_valid "${staging}" "${base}" "${version}"; then
+            candidate="${staging}"
+            echo "ℹ️  Resuming candidate ${version} (${candidate:0:12}) on ${STAGING_BRANCH}."
+        else
+            [[ -z "${staging}" ]] || echo "ℹ️  ${STAGING_BRANCH} holds a stale candidate; replacing it."
+            build_candidate "${kind}" "${staging}"
+            candidate="${CANDIDATE}"
+        fi
+    else
+        # DEVELOP_BRANCH carries a version with no tag (bumped by hand, or by the older
+        # release flow): release that commit as it is, without a new bump.
+        version="${current}"
+        candidate="${base}"
+        echo "ℹ️  ${DEVELOP_BRANCH} already carries the unreleased ${version}; releasing it as is."
+        [[ "${kind}" == "patch" || "${kind}" == "current" ]] || echo "   Run the ${kind} deploy again afterwards for the ${kind} bump."
     fi
 
-    # An untagged current version: an earlier run stopped after its bump.
-    if [[ "${kind}" != "current" ]] && ! tag_exists "${current}"; then
-        echo "ℹ️  ${current} is bumped but not released yet; finishing that release (no new bump)."
-        [[ "${kind}" == "patch" ]] || echo "   Run the ${kind} deploy again afterwards for the ${kind} bump."
-        kind="current"
+    rc=0
+    gate "${candidate}" || rc=$?
+    if ((rc == 2)); then
+        echo "⏸️  CI is still running for ${version} (${candidate:0:12}); run the deploy again to finish."
+        return 0
     fi
-
-    preflight "${kind}"
-    [[ "${kind}" == "current" ]] || bump "${kind}"
-    version="$(current_version)"
-    sha="$(git rev-parse HEAD)"
-    gate "${sha}"
-    promote "${version}" "${sha}"
+    ((rc == 0)) || exit "${rc}"
+    promote "${version}" "${candidate}"
     sync_branch
+    # Remove STAGING_BRANCH only while it still holds the promoted candidate.
+    if [[ "$(remote_tip "${STAGING_BRANCH}")" == "${candidate}" ]]; then
+        git push --quiet --force-with-lease="${STAGING_BRANCH}:${candidate}" origin ":refs/heads/${STAGING_BRANCH}" 2>/dev/null ||
+            echo "ℹ️  Left ${STAGING_BRANCH} in place (it changed meanwhile)."
+    fi
     echo "🎉 Version ${version} released"
     echo "🔗 Monitor the release: https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/actions"
+}
+
+# Read-only summary of where a release stands.
+status() {
+    local base current staging run state
+    git fetch --quiet --prune --tags origin
+    base="$(remote_tip "${DEVELOP_BRANCH}")"
+    current="$(git show "${base}:Cargo.toml" 2>/dev/null | awk -F'"' '/^version = /{print $2; exit}')"
+    echo "origin/${DEVELOP_BRANCH}: ${base:0:12} (version ${current:-?}$(tag_exists "${current}" && echo ", released" || echo ", not released"))"
+    echo "origin/${MAIN_BRANCH}:    $(remote_tip "${MAIN_BRANCH}" | cut -c1-12)"
+    staging="$(remote_tip "${STAGING_BRANCH}")"
+    if [[ -z "${staging}" ]]; then
+        echo "${STAGING_BRANCH}: none (no release in progress)"
+        return 0
+    fi
+    echo "${STAGING_BRANCH}: ${staging:0:12} \"$(git log -1 --format=%s "${staging}")\"$([[ "$(git rev-parse -q --verify "${staging}^")" == "${base}" ]] || echo " (stale: not on the current ${DEVELOP_BRANCH})")"
+    run="$(find_run "${staging}" 2>/dev/null || true)"
+    if [[ -n "${run}" ]]; then
+        state="$(gh run view "${run}" --json status,conclusion,attempt,url --jq '"\(.status) \(.conclusion // "-") (attempt \(.attempt)) \(.url)"' 2>/dev/null || echo "unknown")"
+        echo "   CI: ${state}"
+    else
+        echo "   CI: no run found yet"
+    fi
 }
 
 # Apply branch protection: MAIN_BRANCH only accepts commits whose REQUIRED_CHECK
 # passed (admins included), with signed commits and linear history. Every field is
 # set explicitly: GitHub keeps an omitted one (an old "lock branch" would then block
-# every release push once admins are enforced). DEVELOP_BRANCH
-# keeps signed, linear history but no required checks, since it receives untested
-# merges by design and MAIN_BRANCH is the gate. No pull requests are required.
+# every release push once admins are enforced). DEVELOP_BRANCH keeps signed, linear
+# history without required checks (MAIN_BRANCH is the gate); STAGING_BRANCH stays
+# unprotected because the release flow replaces it. No pull requests are required.
 protect() {
     local repo
     repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
@@ -361,7 +440,8 @@ protect() {
   "allow_fork_syncing": false
 }
 EOF
-    gh api -X PUT "repos/${repo}/branches/${DEVELOP_BRANCH}/protection" --input - >/dev/null <<EOF
+    if [[ "${DEVELOP_BRANCH}" != "${MAIN_BRANCH}" ]]; then
+        gh api -X PUT "repos/${repo}/branches/${DEVELOP_BRANCH}/protection" --input - >/dev/null <<EOF
 {
   "required_status_checks": null,
   "enforce_admins": false,
@@ -376,6 +456,7 @@ EOF
   "allow_fork_syncing": false
 }
 EOF
+    fi
     for branch in "${MAIN_BRANCH}" "${DEVELOP_BRANCH}"; do
         gh api -X POST "repos/${repo}/branches/${branch}/protection/required_signatures" >/dev/null
     done
@@ -384,11 +465,11 @@ EOF
 
 case "${1:-}" in
     deploy) deploy "${2:-patch}" ;;
-    bump) bump "${2:-patch}" ;;
-    preflight) preflight "${2:-patch}" ;;
+    status) status ;;
+    preflight) preflight ;;
     protect) protect ;;
     *)
-        sed -n '/^# Usage:/,/^# Tuning:/p' "$0" | sed 's/^# \{0,1\}//' >&2
+        sed -n '/^# Usage:/,/^#         still runs/p' "$0" | sed 's/^# \{0,1\}//' >&2
         exit 2
         ;;
 esac
