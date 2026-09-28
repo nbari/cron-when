@@ -302,8 +302,9 @@ jobs:
           if-no-files-found: error
 
   # The candidate's manifest: the SHA-256 of every release file and of the crate, the
-  # version, the commit and the toolchain. `just deploy` requires it before tagging,
-  # and the release publishes exactly the files it lists.
+  # version, the commit, the toolchain and the artifacts the release needs. `just
+  # deploy` checks it and those artifacts before tagging, and the release publishes
+  # exactly the files it lists.
   manifest:
     name: Release manifest
     runs-on: ubuntu-latest
@@ -317,8 +318,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           pattern: dist-*
-          merge-multiple: true
-          path: dist
+          path: artifacts
 
       - name: Download this run's crate
         uses: actions/download-artifact@v8
@@ -326,20 +326,51 @@ jobs:
           name: crate
           path: crate
 
+      # Every build of the matrix must be here with all its files, so a lost artifact
+      # can never produce a partial release. Keep this in step with the build matrix.
+      - name: Check the inventory
+        shell: bash
+        env:
+          EXPECTED: dist-linux=3 dist-linux-arm64=3 dist-macos=1 dist-windows=1
+        run: |
+          set -euo pipefail
+          for entry in ${EXPECTED}; do
+            name="${entry%=*}"
+            count="$(find "artifacts/${name}" -maxdepth 1 -type f 2>/dev/null | wc -l)"
+            if [[ "${count}" -ne "${entry#*=}" ]]; then
+              echo "::error::Artifact ${name} has ${count} files, expected ${entry#*=}."
+              exit 1
+            fi
+          done
+          actual="$(find artifacts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tr '\n' ' ')"
+          wanted="$(for entry in ${EXPECTED}; do echo "${entry%=*}"; done | sort | tr '\n' ' ')"
+          if [[ "${actual}" != "${wanted}" ]]; then
+            echo "::error::Found artifacts ${actual}, expected ${wanted}."
+            exit 1
+          fi
+
       - name: Write the manifest
         shell: bash
         env:
           VERSION: ${{ needs.guard.outputs.version }}
+          EXPECTED: dist-linux=3 dist-linux-arm64=3 dist-macos=1 dist-windows=1
         run: |
           set -euo pipefail
-          mkdir manifest
+          mkdir dist manifest
+          find artifacts -type f -exec cp -n {} dist/ \;
           (cd dist && sha256sum -- *) > manifest/SHA256SUMS
+          if [[ "$(wc -l < manifest/SHA256SUMS)" -ne 8 ]]; then
+            echo "::error::Expected 8 release files (a name collision?), got $(wc -l < manifest/SHA256SUMS)."
+            exit 1
+          fi
           (cd crate && sha256sum -- *.crate) > manifest/CRATE.SHA256
           {
             echo "VERSION=${VERSION}"
             echo "COMMIT=${GITHUB_SHA}"
             echo "RUST=$(cat crate/rust-version)"
           } > manifest/release.env
+          # The artifacts the release publishes from; just deploy checks they all remain.
+          { for entry in ${EXPECTED}; do echo "${entry%=*}"; done; echo crate; } > manifest/ARTIFACTS
           cat manifest/*
 
       - name: Upload the manifest

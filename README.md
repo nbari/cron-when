@@ -555,7 +555,8 @@ branch only; `develop` and `main` are not touched yet. Two runs test it in paral
 Test & Build, and a manual run of the
 Deploy workflow on `release` that does everything a release does except publishing
 (the tests, every build for Linux x86_64 and arm64, macOS and Windows, the RPM and DEB
-packages and archives, and a `cargo publish --dry-run`), keeping the artifacts. When
+packages and archives, and the crate packaged and verified), keeping the artifacts
+with a manifest of their SHA-256 sums. When
 both pass, the script signs the tag on the candidate and pushes it to `develop` and
 `main` together with the tag in one atomic, fast-forward-only push, so the three move
 together or not at all. It then brings `sandbox` in step and deletes `release`. The
@@ -563,11 +564,12 @@ tag starts the Deploy workflow once more, but this time it builds nothing. Its g
 checks that the tagged commit is on `main`, carries the tag's version and passed Test &
 Build, and that the signed tag names a successful candidate run of that commit. It then
 publishes exactly the files in that run's manifest, checked by SHA-256, as the GitHub
-release, and uploads the crate the candidate run packaged and verified (repackaged with
-the same toolchain without building, and uploaded only when its checksum matches). The
-`X.Y.Z` tag is the only tag the flow creates, and every build and packaging step has
-passed before it exists; what is left after it are the uploads to GitHub and
-crates.io. If one of them hits an outage, "Re-run failed jobs" on the tag's run
+release, and uploads the crate the candidate run packaged and verified. cargo cannot
+upload a prepared `.crate`, so `cargo publish` repackages the same source with the
+candidate's toolchain, without building; the result is byte-reproducible, and its
+checksum is compared with the manifest before the upload and with crates.io's after it.
+The `X.Y.Z` tag is the only tag the flow creates, and nothing is built after it exists;
+what is left are the uploads to GitHub and crates.io. If one of them hits an outage, "Re-run failed jobs" on the tag's run
 finishes it (GitHub allows re-runs for 30 days), without touching the tag: the release
 is updated in place, and a crate version already on crates.io is accepted only with the
 candidate's checksum.

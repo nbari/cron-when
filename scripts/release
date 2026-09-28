@@ -16,9 +16,9 @@
 #      tag workflow on the candidate: it builds and packages everything and keeps the
 #      artifacts with a manifest of their checksums (CANDIDATE_MANIFEST, checked here)
 #      without publishing. The signed X.Y.Z tag names that run, and the tag's run only
-#      uploads those checksummed artifacts, so no build or packaging step is left for
-#      after the tag. After a failure it keeps waiting RELEASE_RERUN_WAIT seconds for
-#      "Re-run failed jobs".
+#      uploads those checksummed artifacts: nothing is built after the tag (the crate
+#      upload repackages the same source reproducibly and checks the checksum). After a
+#      failure it keeps waiting RELEASE_RERUN_WAIT seconds for "Re-run failed jobs".
 #   4. Promote: sign the tag on the candidate and push it to DEVELOP_BRANCH and
 #      MAIN_BRANCH together with the tag in one atomic, fast-forward-only push, so the
 #      three move together or not at all. Then keep SYNC_BRANCH in step and delete
@@ -379,23 +379,55 @@ build_candidate() {
     echo "✅ Staged ${new} as ${CANDIDATE:0:12} on ${STAGING_BRANCH}"
 }
 
-# Look up the run of a workflow for a commit, triggered by `event` (push by default):
-# the newest successful one when there is one (a stray duplicate that failed must not
-# hide it), otherwise the newest. Prints its id or nothing; fails when gh does.
+# Look up the run of a workflow for a commit, triggered by `event` (push by default)
+# and, when `ref` is given, on that branch only. Prints the newest successful run (for a
+# candidate run: the newest successful one that kept CANDIDATE_MANIFEST, so a stray
+# manual run cannot stand in for it), otherwise the newest unfinished or failed run,
+# or nothing. Fails when GitHub cannot be asked.
 find_run() {
-    local workflow=$1 sha=$2 event=${3:-push}
-    gh run list --workflow "${workflow}" --commit "${sha}" --event "${event}" --limit 20 \
-        --json databaseId,conclusion \
-        --jq '(([.[] | select(.conclusion == "success")] | first) // first // {}) | .databaseId // empty'
+    local workflow=$1 sha=$2 event=${3:-push} ref=${4:-} args listing id conclusion first="" rc
+    args=(--workflow "${workflow}" --commit "${sha}" --event "${event}" --limit 20)
+    [[ -z "${ref}" ]] || args+=(--branch "${ref}")
+    listing="$(gh run list "${args[@]}" --json databaseId,conclusion \
+        --jq '.[] | "\(.databaseId) \(if (.conclusion // "") == "" then "-" else .conclusion end)"')" || return 1
+    while read -r id conclusion; do
+        [[ -n "${id}" ]] || continue
+        if [[ "${conclusion}" == success ]]; then
+            [[ "${event}" == workflow_dispatch ]] || { printf '%s\n' "${id}"; return 0; }
+            rc=0
+            run_has_manifest "${id}" || rc=$?
+            ((rc != 2)) || return 1
+            ((rc != 0)) || { printf '%s\n' "${id}"; return 0; }
+        elif [[ -z "${first}" ]]; then
+            first="${id}"
+        fi
+    done <<<"${listing}"
+    printf '%s\n' "${first}"
+}
+
+# Whether a run still has the CANDIDATE_MANIFEST artifact: 0 yes, 1 no, 2 GitHub
+# could not be asked.
+run_has_manifest() {
+    local names
+    [[ -n "${CANDIDATE_MANIFEST}" ]] || return 0
+    names="$(run_artifacts "$1")" || return 2
+    [[ " ${names} " == *" ${CANDIDATE_MANIFEST} "* ]]
+}
+
+# The names of a run's artifacts that have not expired, space-separated.
+run_artifacts() {
+    gh api "repos/{owner}/{repo}/actions/runs/$1/artifacts" \
+        --jq '[.artifacts[] | select(.expired | not) | .name] | join(" ")'
 }
 
 # Wait for the `event`-triggered (push by default) run of `workflow` for exactly this
 # commit; succeed only if it passes (or a re-run of its failed jobs passes within
 # RERUN_WAIT), leaving the run's id in GATE_RUN_ID. With RELEASE_NO_WAIT=1 it returns 2
-# while the run is still pending.
+# while the run is still pending. `ref` narrows the lookup to one branch, and `run`
+# follows that run directly (one this deploy just dispatched).
 GATE_RUN_ID=""
 gate() {
-    local sha=$1 workflow=$2 event=${3:-push} deadline appear_deadline run_id="" listed offline=0 url state status conclusion attempt
+    local sha=$1 workflow=$2 event=${3:-push} ref=${4:-} run_id=${5:-} deadline appear_deadline listed offline=0 url state status conclusion attempt
     local failed_at="" failed_attempt="" last="" window
     deadline=$((SECONDS + CI_TIMEOUT))
     appear_deadline=$((SECONDS + 300))
@@ -403,7 +435,7 @@ gate() {
 
     echo "⏳ Waiting for the ${workflow} ${event} run of ${sha:0:12}..."
     while [[ -z "${run_id}" ]]; do
-        if listed="$(find_run "${workflow}" "${sha}" "${event}" 2>/dev/null)"; then
+        if listed="$(find_run "${workflow}" "${sha}" "${event}" "${ref}" 2>/dev/null)"; then
             offline=0
             run_id="${listed}"
             if [[ -z "${run_id}" ]] && ((SECONDS >= appear_deadline)); then
@@ -478,39 +510,67 @@ gate() {
 }
 
 # Start CANDIDATE_WORKFLOW as a manual (workflow_dispatch) run on the branch that holds
-# the candidate: it builds and packages everything and uploads the artifacts, and
-# publishes nothing. A run that already exists for the commit is reused, so a rerun
-# never starts a second one, and no tag is involved until the release itself.
+# the candidate: it builds and packages everything and keeps the artifacts, and
+# publishes nothing. An existing usable run of the commit on that branch is reused, and
+# so is a run this clone dispatched that GitHub does not list yet (its id, printed by
+# `gh workflow run`, is recorded), so a rerun never starts a second one. Leaves the run
+# to follow in CANDIDATE_RUN.
+CANDIDATE_RUN=""
 start_candidate_run() {
-    local version=$1 sha=$2 ref=$3 existing listed="" _
+    local version=$1 sha=$2 ref=$3 marker recorded_sha="" recorded_run="" state output _
+    CANDIDATE_RUN=""
     [[ -n "${CANDIDATE_WORKFLOW}" ]] || return 0
     [[ "$(remote_tip "${ref}")" == "${sha}" ]] || die "origin/${ref} no longer holds ${sha:0:12}; run the deploy again."
-    existing="$(find_run "${CANDIDATE_WORKFLOW}" "${sha}" workflow_dispatch 2>/dev/null)" ||
+    CANDIDATE_RUN="$(find_run "${CANDIDATE_WORKFLOW}" "${sha}" workflow_dispatch "${ref}" 2>/dev/null)" ||
         die "GitHub unreachable while looking for the candidate run; run the deploy again."
-    [[ -z "${existing}" ]] || return 0
-    gh workflow run "${CANDIDATE_WORKFLOW}" --ref "${ref}" >/dev/null ||
-        die "Could not start ${CANDIDATE_WORKFLOW} on ${ref}; run the deploy again."
-    echo "🚀 Started ${CANDIDATE_WORKFLOW} on ${ref}: it builds and packages ${version} without publishing."
-    # GitHub lists a dispatched run a few seconds later; wait for it, so a rerun right
-    # away finds this run instead of starting a second one.
+    [[ -z "${CANDIDATE_RUN}" ]] || return 0
+    marker="$(worktree_root)/release-candidate-run"
+    read -r recorded_sha recorded_run <"${marker}" 2>/dev/null || true
+    state=""
+    if [[ "${recorded_sha}" == "${sha}" && -n "${recorded_run}" ]]; then
+        state="$(gh run view "${recorded_run}" --json headSha,status --jq '"\(.headSha) \(.status)"' 2>/dev/null || true)"
+    fi
+    # Only a run still in progress: a finished one would be listed, or is unusable.
+    if [[ "${state}" == "${sha} "* && "${state}" != *" completed" ]]; then
+        CANDIDATE_RUN="${recorded_run}"
+        echo "ℹ️  Following candidate run ${CANDIDATE_RUN}, dispatched earlier and not listed yet."
+        return 0
+    fi
+    output="$(gh workflow run "${CANDIDATE_WORKFLOW}" --ref "${ref}" 2>&1)" ||
+        die "Could not start ${CANDIDATE_WORKFLOW} on ${ref}; run the deploy again. (${output})"
+    CANDIDATE_RUN="$(grep -oE '/actions/runs/[0-9]+' <<<"${output}" | head -n 1 | grep -oE '[0-9]+$' || true)"
+    [[ -z "${CANDIDATE_RUN}" ]] || printf '%s %s\n' "${sha}" "${CANDIDATE_RUN}" >"${marker}"
+    echo "🚀 Started ${CANDIDATE_WORKFLOW} on ${ref}${CANDIDATE_RUN:+ (run ${CANDIDATE_RUN})}: it builds and packages ${version} without publishing."
+    [[ -z "${CANDIDATE_RUN}" ]] || return 0
+    # An older gh prints no run URL: wait until GitHub lists the run instead.
     for _ in $(seq 24); do
-        listed="$(find_run "${CANDIDATE_WORKFLOW}" "${sha}" workflow_dispatch 2>/dev/null || true)"
-        [[ -z "${listed}" ]] || return 0
+        CANDIDATE_RUN="$(find_run "${CANDIDATE_WORKFLOW}" "${sha}" workflow_dispatch "${ref}" 2>/dev/null || true)"
+        [[ -z "${CANDIDATE_RUN}" ]] || return 0
         sleep 5
     done
     echo "⚠️  The dispatched run is not listed yet; the wait below keeps looking for it."
 }
 
-# The candidate run must keep CANDIDATE_MANIFEST, which the tag's run publishes from:
-# check it before the tag exists, while nothing is released yet.
+# Before the tag exists, while nothing is released: the candidate run must still have
+# CANDIDATE_MANIFEST and every artifact the manifest lists (its ARTIFACTS file), which
+# the tag's run publishes from.
 check_candidate_manifest() {
-    local run=$1 names
+    local run=$1 dir names required artifact missing=()
     [[ -n "${CANDIDATE_MANIFEST}" ]] || return 0
-    names="$(gh api "repos/{owner}/{repo}/actions/runs/${run}/artifacts" \
-        --jq '[.artifacts[] | select(.expired | not) | .name] | join(" ")' 2>/dev/null)" ||
+    dir="$(mktemp -d "$(worktree_root)/release-manifest.XXXXXX")"
+    if ! gh run download "${run}" --name "${CANDIDATE_MANIFEST}" --dir "${dir}" >/dev/null 2>&1; then
+        rm -rf "${dir}"
+        die "Candidate run ${run} has no downloadable ${CANDIDATE_MANIFEST}; re-run all its jobs in GitHub, then run the deploy again. Nothing was released."
+    fi
+    required="${CANDIDATE_MANIFEST} $(cat "${dir}/ARTIFACTS" 2>/dev/null || true)"
+    rm -rf "${dir}"
+    names="$(run_artifacts "${run}" 2>/dev/null)" ||
         die "GitHub unreachable while checking the candidate run's artifacts; run the deploy again."
-    [[ " ${names} " == *" ${CANDIDATE_MANIFEST} "* ]] ||
-        die "Candidate run ${run} has no ${CANDIDATE_MANIFEST} artifact (found: ${names:-none}); nothing was released."
+    for artifact in ${required}; do
+        [[ " ${names} " == *" ${artifact} "* ]] || missing+=("${artifact}")
+    done
+    ((${#missing[@]} == 0)) ||
+        die "Candidate run ${run} lacks ${missing[*]}; re-run all its jobs in GitHub, then run the deploy again. Nothing was released."
 }
 
 # Tag the CI-verified commit and move MAIN_BRANCH and DEVELOP_BRANCH to it in one
@@ -595,7 +655,7 @@ sync_branch() {
 }
 
 deploy() {
-    local kind=$1 base current version staging candidate="" candidate_run="" problem="" rc
+    local kind=$1 base current version staging candidate="" candidate_run="" candidate_ref problem="" rc
     preflight catch-up
     prune_stale_worktrees
     base="$(git rev-parse HEAD)"
@@ -644,16 +704,14 @@ deploy() {
 
     # The candidate sits on STAGING_BRANCH, or is DEVELOP_BRANCH itself when its
     # untagged version is released as is.
-    if [[ "${candidate}" == "$(remote_tip "${STAGING_BRANCH}")" ]]; then
-        start_candidate_run "${version}" "${candidate}" "${STAGING_BRANCH}"
-    else
-        start_candidate_run "${version}" "${candidate}" "${DEVELOP_BRANCH}"
-    fi
+    candidate_ref="${DEVELOP_BRANCH}"
+    [[ "${candidate}" != "$(remote_tip "${STAGING_BRANCH}")" ]] || candidate_ref="${STAGING_BRANCH}"
+    start_candidate_run "${version}" "${candidate}" "${candidate_ref}"
     rc=0
     candidate_run=""
     gate "${candidate}" "${CI_WORKFLOW}" || rc=$?
     if ((rc == 0)) && [[ -n "${CANDIDATE_WORKFLOW}" ]]; then
-        gate "${candidate}" "${CANDIDATE_WORKFLOW}" workflow_dispatch || rc=$?
+        gate "${candidate}" "${CANDIDATE_WORKFLOW}" workflow_dispatch "${candidate_ref}" "${CANDIDATE_RUN}" || rc=$?
         if ((rc == 0)); then
             candidate_run="${GATE_RUN_ID}"
             check_candidate_manifest "${candidate_run}"
@@ -689,7 +747,7 @@ status() {
     base="$(remote_tip "${DEVELOP_BRANCH}")"
     current="$(version_at "${base}" 2>/dev/null || true)"
     if is_released "${current}"; then
-        label="released"
+        label="tagged on ${MAIN_BRANCH}"
     elif tag_exists "${current}"; then
         label="tagged, but origin/${MAIN_BRANCH} does not contain the tag: an incomplete release"
     else
@@ -698,14 +756,14 @@ status() {
     echo "origin/${DEVELOP_BRANCH}: ${base:0:12} (version ${current:-?}, ${label})"
     # A tag on MAIN_BRANCH means promoted; publishing is its tag workflow run's job.
     if [[ -n "${CANDIDATE_WORKFLOW}" ]] && tag_exists "${current}"; then
-        run_state "${CANDIDATE_WORKFLOW}" "$(git rev-parse "refs/tags/${current}^{commit}")" push "publish of ${current}"
+        run_state "${CANDIDATE_WORKFLOW}" "$(git rev-parse "refs/tags/${current}^{commit}")" push "${current}" "publish of ${current}"
     fi
     echo "origin/${MAIN_BRANCH}:    $(remote_tip "${MAIN_BRANCH}" | cut -c1-12)"
     if ! tag_exists "${current}"; then
         # An untagged version is released as is: its candidate is DEVELOP_BRANCH itself.
         echo "   deploy releases ${current} as is; its runs:"
         run_state "${CI_WORKFLOW}" "${base}"
-        [[ -z "${CANDIDATE_WORKFLOW}" ]] || run_state "${CANDIDATE_WORKFLOW}" "${base}" workflow_dispatch
+        [[ -z "${CANDIDATE_WORKFLOW}" ]] || run_state "${CANDIDATE_WORKFLOW}" "${base}" workflow_dispatch "${DEVELOP_BRANCH}"
     fi
     staging="$(remote_tip "${STAGING_BRANCH}")"
     if [[ -z "${staging}" ]]; then
@@ -737,13 +795,14 @@ status() {
     fi
     echo "${STAGING_BRANCH}: ${staging:0:12} \"${subject}\" ($([[ -z "${reason}" ]] && echo "${kind} candidate for ${v}; a ${kind} deploy resumes it" || echo "stale: ${reason}"))"
     run_state "${CI_WORKFLOW}" "${staging}"
-    [[ -z "${CANDIDATE_WORKFLOW}" ]] || run_state "${CANDIDATE_WORKFLOW}" "${staging}" workflow_dispatch
+    [[ -z "${CANDIDATE_WORKFLOW}" ]] || run_state "${CANDIDATE_WORKFLOW}" "${staging}" workflow_dispatch "${STAGING_BRANCH}"
 }
 
-# One status line for the `event`-triggered run of a workflow on a commit.
+# One status line for the `event`-triggered run of a workflow on a commit (on `ref`
+# only, when given).
 run_state() {
-    local workflow=$1 sha=$2 event=${3:-push} label=${4:-} run state
-    run="$(find_run "${workflow}" "${sha}" "${event}" 2>/dev/null || true)"
+    local workflow=$1 sha=$2 event=${3:-push} ref=${4:-} label=${5:-} run state
+    run="$(find_run "${workflow}" "${sha}" "${event}" "${ref}" 2>/dev/null || true)"
     if [[ -n "${run}" ]]; then
         state="$(gh run view "${run}" --json status,conclusion,attempt,url --jq '"\(.status) \(if (.conclusion // "") == "" then "-" else .conclusion end) (attempt \(.attempt)) \(.url)"' 2>/dev/null || echo "unknown")"
         echo "   ${label:-${workflow} (${event})}: ${state}"
