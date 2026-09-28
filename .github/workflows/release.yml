@@ -56,6 +56,11 @@ jobs:
             echo "::error::Tag ${tag} points at ${GITHUB_SHA}, which is not on main; refusing to release."
             exit 1
           fi
+          version="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
+          if [[ "${version}" != "${tag}" ]]; then
+            echo "::error::Tag ${tag} does not match the package version ${version} at ${GITHUB_SHA}; refusing to release."
+            exit 1
+          fi
           passed="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow build.yml \
             --commit "${GITHUB_SHA}" --event push --status success --limit 1 \
             --json databaseId --jq '.[0].databaseId // empty')"

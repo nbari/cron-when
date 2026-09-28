@@ -553,17 +553,23 @@ passes, the script signs the tag on the candidate and pushes it to `develop` and
 `main` together with the tag in one atomic, fast-forward-only push, so the three move
 together or not at all. It then brings `sandbox` in step and deletes `release`. The
 tag starts the Deploy workflow, whose guard publishes the GitHub release and the crate
-only when the tagged commit is on `main` and passed Test & Build.
+only when the tagged commit is on `main`, passed Test & Build, and carries the tag's
+version in `Cargo.toml`.
 
 `just deploy` is idempotent. A rerun resumes the candidate on `release` when it still
-sits on the current `develop` (no rebuild, no new bump), replaces it when `develop`
-has moved on, and reports "nothing new to release" when `develop` is already the last
-release. A failed or interrupted release leaves `develop` and `main` exactly as they
-were: re-run the failed jobs, or fix on `sandbox` and merge into `develop`, then run
-`just deploy` again. While it waits, the script polls GitHub every 30 seconds
-(`RELEASE_POLL_SECONDS`), for at most an hour per attempt (`RELEASE_CI_TIMEOUT`), and
-after a failure keeps waiting 15 minutes (`RELEASE_RERUN_WAIT`) so "Re-run failed
-jobs" in GitHub lets the release continue by itself. With `RELEASE_NO_WAIT=1` it
+sits on the current `develop` and its content is exactly the version bump (no
+rebuild, no new bump), replaces an outdated candidate when `develop` has moved on, and
+reports "nothing new to release" when `develop` is already the last release. It never
+overwrites a `release` branch holding anything other than a former candidate. Until
+the final atomic push succeeds, a failed or interrupted release leaves `develop` and
+`main` as they were: re-run the failed jobs, or fix on `sandbox` and merge into
+`develop`, then run `just deploy` again. Once that push succeeds the release is done;
+if the run is cut off right after it, the next `just deploy` only finishes the
+tidy-up. While it waits, the script polls GitHub every 10 seconds until the run
+appears (up to 5 minutes), then every 30 seconds (`RELEASE_POLL_SECONDS`), for at
+most an hour per attempt (`RELEASE_CI_TIMEOUT`), and after each failed attempt keeps
+waiting 15 minutes (`RELEASE_RERUN_WAIT`) so "Re-run failed jobs" in GitHub lets the
+release continue by itself. With `RELEASE_NO_WAIT=1` it
 stops once the candidate is staged (or while CI still runs), and a later
 `just deploy` finishes the release. `just release-status` shows `develop`, `main`,
 the staged candidate and its CI run without changing anything, and
