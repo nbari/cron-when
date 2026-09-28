@@ -313,7 +313,7 @@ candidate_problem() {
     elif [[ "$(git log -1 --format=%s "${sha}")" != "bump version to ${version}" ]]; then
         echo "not named \"bump version to ${version}\""
     elif [[ "$(version_at "${sha}" || true)" != "${version}" ]]; then
-        echo "its Cargo.toml says $(version_at "${sha}" || true)"
+        echo "its recorded version is $(version_at "${sha}" || true)"
     elif tag_exists "${version}"; then
         echo "${version} is already tagged"
     elif ! is_signed "${sha}"; then
