@@ -46,6 +46,7 @@
 # candidate run the signed tag names.
 #
 # Usage: scripts/release deploy <patch|minor|major|current>
+#        scripts/release republish X.Y.Z
 #        scripts/release status
 #        scripts/release preflight
 #        scripts/release protect
@@ -897,6 +898,21 @@ run_state() {
     fi
 }
 
+# Publish an existing, promoted X.Y.Z tag again when its own run cannot (a bug in the
+# publish steps of the tagged workflow, or GitHub's 30-day re-run limit): a recovery run
+# of CANDIDATE_WORKFLOW on MAIN_BRANCH checks the tag like its own run would and
+# publishes the tag's candidate artifacts. The tag and the branches never change.
+republish() {
+    local version=$1 output
+    [[ -n "${CANDIDATE_WORKFLOW}" ]] || die "CANDIDATE_WORKFLOW is empty; there is no tag workflow to run."
+    [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Usage: scripts/release republish X.Y.Z"
+    git fetch --quiet --prune --tags origin
+    is_released "${version}" || die "${version} is not a promoted release (no tag on origin/${MAIN_BRANCH})."
+    output="$(gh workflow run "${CANDIDATE_WORKFLOW}" --ref "${MAIN_BRANCH}" -f publish="${version}" 2>&1)" ||
+        die "Could not start the recovery run: ${output}"
+    echo "🚀 Started a recovery run of ${CANDIDATE_WORKFLOW} on ${MAIN_BRANCH} to publish ${version}: $(grep -oE 'https://[^ ]+/actions/runs/[0-9]+' <<<"${output}" || echo "see GitHub Actions")"
+}
+
 # Apply branch protection: MAIN_BRANCH only accepts commits whose REQUIRED_CHECK
 # passed (admins included), with signed commits and linear history. Every field is
 # set explicitly: GitHub keeps an omitted one (an old "lock branch" would then block
@@ -952,6 +968,7 @@ EOF
 
 case "${1:-}" in
     deploy) deploy "${2:-patch}" ;;
+    republish) republish "${2:-}" ;;
     status) status ;;
     preflight) preflight ;;
     protect) protect ;;

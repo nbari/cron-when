@@ -108,6 +108,10 @@ deploy-major:
 deploy-current:
     @scripts/release deploy current
 
+# Publish an existing release tag again if its own run cannot (recovery run on main)
+release-republish version:
+    @scripts/release republish {{version}}
+
 # Show where a release stands: develop, main, the staged candidate and its CI run
 release-status:
     @scripts/release status

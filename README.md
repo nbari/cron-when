@@ -572,7 +572,13 @@ The `X.Y.Z` tag is the only tag the flow creates, and nothing is built after it 
 what is left are the uploads to GitHub and crates.io. If one of them hits an outage, "Re-run failed jobs" on the tag's run
 finishes it (GitHub allows re-runs for 30 days), without touching the tag: the release
 is updated in place, and a crate version already on crates.io is accepted only with the
-candidate's checksum.
+candidate's checksum. When re-running cannot help, because the publish steps of the
+tagged workflow themselves were wrong or the 30 days have passed, fix the workflow and
+release as usual, then run `just release-republish X.Y.Z`: a recovery run on `main`
+checks that tag exactly like its own run would and publishes its candidate run's
+artifacts with `main`'s workflow. The tag never moves. Both paths need the candidate
+run's artifacts, which GitHub keeps for 90 days; a publish failure shows up within
+minutes of the tag, and after that window the way forward is the next patch release.
 
 `just deploy` is idempotent. A rerun resumes the candidate on `release` when it is
 signed, still sits on the current `develop` and its content is exactly the version

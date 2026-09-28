@@ -6,6 +6,13 @@ on:
     tags:
       - '*'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: >-
+          Recovery: an existing X.Y.Z tag whose publishing failed. Run on main; it checks
+          the tag like its own run would and publishes the tag's candidate artifacts.
+        required: false
+        default: ''
 
 # Read-only by default: only the GitHub release job writes to the repository.
 permissions:
@@ -20,9 +27,14 @@ jobs:
   # - `release`: a pushed X.Y.Z tag. It builds nothing. The signed tag names its
   #   candidate run; the guard checks that run and the tag's commit, and the jobs
   #   below publish exactly the manifest's files, so what ships is what was tested.
+  # - `recover`: a manual run on main with `publish: X.Y.Z`, for a tag whose publishing
+  #   failed in a way re-running its jobs cannot fix (a bug in the publish steps of the
+  #   tagged workflow, or GitHub's 30-day re-run limit). It applies the same checks to
+  #   that tag and publishes its candidate artifacts with main's workflow; the tag
+  #   itself never changes.
   # - `test-tag`: any other tag, or a manual run on a tag (e.g. t-* from
   #   `just t-deploy`): tests and builds only.
-  # A release tag may only publish a commit that is on main, carries the tag's version
+  # A tag may only be published when its commit is on main, carries the tag's version
   # and passed Test & Build and its candidate run; a hand-pushed or stray tag stops here.
   guard:
     name: Release guard
@@ -33,6 +45,8 @@ jobs:
     outputs:
       kind: ${{ steps.classify.outputs.kind }}
       version: ${{ steps.classify.outputs.version }}
+      tag: ${{ steps.classify.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
       candidate_run: ${{ steps.release.outputs.candidate_run }}
     steps:
       - name: Checkout
@@ -43,13 +57,24 @@ jobs:
         shell: bash
         env:
           EVENT: ${{ github.event_name }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
           version="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
-          if [[ "${EVENT}" == workflow_dispatch && "${GITHUB_REF}" == refs/heads/* ]]; then
+          tag=""
+          if [[ "${EVENT}" == workflow_dispatch && -n "${PUBLISH:-}" ]]; then
+            if [[ "${GITHUB_REF}" != refs/heads/main || ! "${PUBLISH}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::A recovery run needs an X.Y.Z tag in 'publish' and must run on main."
+              exit 1
+            fi
+            kind=recover
+            tag="${PUBLISH}"
+            version="${PUBLISH}"
+          elif [[ "${EVENT}" == workflow_dispatch && "${GITHUB_REF}" == refs/heads/* ]]; then
             kind=candidate
           elif [[ "${EVENT}" == push && "${GITHUB_REF}" == refs/tags/* && "${GITHUB_REF_NAME}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             kind=release
+            tag="${GITHUB_REF_NAME}"
           else
             kind=test-tag
             # Test builds are named after the ref; only safe characters reach file names.
@@ -65,70 +90,83 @@ jobs:
           {
             echo "kind=${kind}"
             echo "version=${version}"
+            echo "tag=${tag}"
           } >> "$GITHUB_OUTPUT"
-          echo "${EVENT} on ${GITHUB_REF} classified as ${kind} (version ${version})."
+          echo "${EVENT} on ${GITHUB_REF} classified as ${kind} (version ${version}${tag:+, tag ${tag}})."
 
+      # Everything is read through the API, so it holds for any tag, however far main
+      # has moved on since.
       - name: Require the tag's commit, version, Test & Build run and candidate run
         id: release
-        if: steps.classify.outputs.kind == 'release'
+        if: steps.classify.outputs.kind == 'release' || steps.classify.outputs.kind == 'recover'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.classify.outputs.tag }}
+          KIND: ${{ steps.classify.outputs.kind }}
         shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
-            echo "::error::Tag ${tag} points at ${GITHUB_SHA}, which is not on main; refusing to release."
+          repo="${GITHUB_REPOSITORY}"
+          # The signed tag names the candidate run whose artifacts it releases.
+          read -r type object <<<"$(gh api "repos/${repo}/git/ref/tags/${TAG}" --jq '"\(.object.type) \(.object.sha)"')"
+          if [[ "${type}" != tag ]]; then
+            echo "::error::${TAG} is not an annotated tag; refusing to release."
             exit 1
           fi
-          version="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
-          if [[ "${version}" != "${tag}" ]]; then
-            echo "::error::Tag ${tag} does not match the package version ${version} at ${GITHUB_SHA}; refusing to release."
+          read -r verified commit <<<"$(gh api "repos/${repo}/git/tags/${object}" --jq '"\(.verification.verified) \(.object.sha)"')"
+          message="$(gh api "repos/${repo}/git/tags/${object}" --jq '.message')"
+          if [[ "${verified}" != true ]]; then
+            echo "::error::The signature of tag ${TAG} is not verified by GitHub; refusing to release."
             exit 1
           fi
-          passed="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow build.yml \
-            --commit "${GITHUB_SHA}" --event push --status success --limit 1 \
+          if [[ "${KIND}" == release && "${commit}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Tag ${TAG} points at ${commit}, but this run is for ${GITHUB_SHA}."
+            exit 1
+          fi
+          status="$(gh api "repos/${repo}/compare/${commit}...main" --jq '.status')"
+          if [[ "${status}" != identical && "${status}" != ahead ]]; then
+            echo "::error::Tag ${TAG} points at ${commit}, which is not on main (${status}); refusing to release."
+            exit 1
+          fi
+          version="$(gh api "repos/${repo}/contents/Cargo.toml?ref=${commit}" --jq '.content' | base64 -d | awk -F'"' '/^version = /{print $2; exit}')"
+          if [[ "${version}" != "${TAG}" ]]; then
+            echo "::error::Tag ${TAG} does not match the package version ${version} at ${commit}; refusing to release."
+            exit 1
+          fi
+          passed="$(gh run list --repo "${repo}" --workflow build.yml \
+            --commit "${commit}" --event push --status success --limit 1 \
             --json databaseId --jq '.[0].databaseId // empty')"
           if [[ -z "${passed}" ]]; then
-            echo "::error::${GITHUB_SHA} has no successful Test & Build run; refusing to release ${tag}."
-            exit 1
-          fi
-          # The signed tag names the candidate run whose artifacts it releases.
-          read -r type object <<<"$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '"\(.object.type) \(.object.sha)"')"
-          if [[ "${type}" != tag ]]; then
-            echo "::error::${tag} is not an annotated tag; refusing to release."
-            exit 1
-          fi
-          verified="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object}" --jq '.verification.verified')"
-          message="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object}" --jq '.message')"
-          if [[ "${verified}" != true ]]; then
-            echo "::error::The signature of tag ${tag} is not verified by GitHub; refusing to release."
+            echo "::error::${commit} has no successful Test & Build run; refusing to release ${TAG}."
             exit 1
           fi
           candidate_run="$(sed -n 's/^Candidate run: \([0-9][0-9]*\)$/\1/p' <<<"${message}" | head -n 1)"
           if [[ -z "${candidate_run}" ]]; then
-            echo "::error::Tag ${tag} names no candidate run; refusing to publish untested artifacts."
+            echo "::error::Tag ${TAG} names no candidate run; refusing to publish untested artifacts."
             exit 1
           fi
-          read -r head_sha event conclusion path <<<"$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run}" \
+          read -r head_sha event conclusion path <<<"$(gh api "repos/${repo}/actions/runs/${candidate_run}" \
             --jq '"\(.head_sha) \(.event) \(.conclusion) \(.path)"')"
-          if [[ "${head_sha}" != "${GITHUB_SHA}" || "${event}" != workflow_dispatch || "${conclusion}" != success || "${path}" != .github/workflows/release.yml* ]]; then
-            echo "::error::Run ${candidate_run} is not a successful candidate run of ${GITHUB_SHA} (${head_sha} ${event} ${conclusion} ${path})."
+          if [[ "${head_sha}" != "${commit}" || "${event}" != workflow_dispatch || "${conclusion}" != success || "${path}" != .github/workflows/release.yml* ]]; then
+            echo "::error::Run ${candidate_run} is not a successful candidate run of ${commit} (${head_sha} ${event} ${conclusion} ${path})."
             exit 1
           fi
-          echo "candidate_run=${candidate_run}" >> "$GITHUB_OUTPUT"
-          echo "Tag ${tag}: ${GITHUB_SHA} is on main, passed Test & Build (run ${passed}) and candidate run ${candidate_run}."
+          {
+            echo "commit=${commit}"
+            echo "candidate_run=${candidate_run}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Tag ${TAG}: ${commit} is on main, passed Test & Build (run ${passed}) and candidate run ${candidate_run}."
 
-  # A release tag reuses its candidate run's results, so it neither tests nor builds.
+  # Publishing (release, recover) reuses the candidate run's results: it neither tests
+  # nor builds.
   test:
     needs: guard
-    if: needs.guard.outputs.kind != 'release'
+    if: needs.guard.outputs.kind == 'candidate' || needs.guard.outputs.kind == 'test-tag'
     uses: ./.github/workflows/test.yml
 
   containers:
     needs: guard
-    if: needs.guard.outputs.kind != 'release'
+    if: needs.guard.outputs.kind == 'candidate' || needs.guard.outputs.kind == 'test-tag'
     uses: ./.github/workflows/containers.yml
 
   build:
@@ -138,7 +176,7 @@ jobs:
       - guard
       - test
       - containers
-    if: needs.guard.outputs.kind != 'release'
+    if: needs.guard.outputs.kind == 'candidate' || needs.guard.outputs.kind == 'test-tag'
     env:
       VERSION: ${{ needs.guard.outputs.version }}
 
@@ -275,7 +313,7 @@ jobs:
     name: Crate package
     runs-on: ubuntu-latest
     needs: guard
-    if: needs.guard.outputs.kind != 'release'
+    if: needs.guard.outputs.kind == 'candidate' || needs.guard.outputs.kind == 'test-tag'
     outputs:
       rust: ${{ steps.package.outputs.rust }}
     steps:
@@ -396,7 +434,7 @@ jobs:
     name: GitHub release
     runs-on: ubuntu-latest
     needs: guard
-    if: needs.guard.outputs.kind == 'release'
+    if: needs.guard.outputs.kind == 'release' || needs.guard.outputs.kind == 'recover'
     permissions:
       contents: write
       actions: read
@@ -422,11 +460,12 @@ jobs:
         shell: bash
         env:
           TAG_VERSION: ${{ needs.guard.outputs.version }}
+          TAG_COMMIT: ${{ needs.guard.outputs.commit }}
         run: |
           set -euo pipefail
           . manifest/release.env
-          if [[ "${VERSION}" != "${TAG_VERSION}" || "${COMMIT}" != "${GITHUB_SHA}" ]]; then
-            echo "::error::The candidate manifest is for ${VERSION} at ${COMMIT}, not ${TAG_VERSION} at ${GITHUB_SHA}."
+          if [[ "${VERSION}" != "${TAG_VERSION}" || "${COMMIT}" != "${TAG_COMMIT}" ]]; then
+            echo "::error::The candidate manifest is for ${VERSION} at ${COMMIT}, not ${TAG_VERSION} at ${TAG_COMMIT}."
             exit 1
           fi
           listed="$(awk '{print $2}' manifest/SHA256SUMS | sort)"
@@ -442,10 +481,12 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ needs.guard.outputs.tag }}
           draft: false
           files: dist/*
 
-  # Upload the crate the candidate run packaged and verified, after the GitHub release.
+  # Upload the crate the candidate run packaged and verified, after the GitHub release,
+  # from a clean checkout of the tag.
   # The candidate's toolchain repackages it without building (cargo packaging is
   # reproducible), and it is only uploaded when the checksum matches the manifest.
   # Safe to re-run: a version crates.io already has is accepted only with that checksum.
@@ -455,28 +496,32 @@ jobs:
     needs:
       - guard
       - release
-    if: github.event_name == 'push' && needs.guard.outputs.kind == 'release'
+    if: needs.guard.outputs.kind == 'release' || needs.guard.outputs.kind == 'recover'
     permissions:
       contents: read
       actions: read
     steps:
-      - name: Checkout sources
+      - name: Checkout the tag's sources
         uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.guard.outputs.tag }}
 
+      # Outside the checkout: cargo refuses to package a working tree with files git
+      # does not know about.
       - name: Download the candidate run's manifest
         uses: actions/download-artifact@v8
         with:
           run-id: ${{ needs.guard.outputs.candidate_run }}
           github-token: ${{ github.token }}
           name: release-manifest
-          path: manifest
+          path: ${{ runner.temp }}/manifest
 
       - name: Read the manifest
         id: manifest
         shell: bash
         run: |
           set -euo pipefail
-          . manifest/release.env
+          . "${RUNNER_TEMP}/manifest/release.env"
           echo "rust=${RUST}" >> "$GITHUB_OUTPUT"
 
       - name: Install the candidate's toolchain
@@ -492,7 +537,7 @@ jobs:
         run: |
           set -euo pipefail
           crate="$(awk -F'"' '/^name = /{print $2; exit}' Cargo.toml)"
-          expected="$(awk '{print $1}' manifest/CRATE.SHA256)"
+          expected="$(awk '{print $1}' "${RUNNER_TEMP}/manifest/CRATE.SHA256")"
           registry() {
             curl -sf -A "${crate}-release" "https://crates.io/api/v1/crates/${crate}/${VERSION}" | jq -r '.version.checksum // empty' || true
           }
