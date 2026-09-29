@@ -1,9 +1,15 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+**From 0.5.20 on, the notes for each version are on its
+[GitHub release](https://github.com/nbari/cron-when/releases)**: the release workflow
+writes them from the commit subjects since the previous release, so they need no hand
+editing and always match what shipped (see [RELEASING.md](RELEASING.md)). The changes in
+0.5.1 to 0.5.19 are in the commit history
+([0.5.0...0.5.19](https://github.com/nbari/cron-when/compare/0.5.0...0.5.19)). This file
+keeps the history up to 0.5.0, in the
+[Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format.
 
 ## [0.5.0] - 2026-03-31
 

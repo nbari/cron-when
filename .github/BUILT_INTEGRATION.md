@@ -58,29 +58,32 @@ pub fn new() -> Command {
 
 ## Version Output Behavior
 
-### When built from git repository:
+### When built from a git checkout:
 ```bash
 $ cron-when --version
-cron-when 0.1.0 - 5bb64edb296d182b2d2d89d4b3915e374a573bc3
+cron-when 0.5.19 - 9eb12c44f50c63b354362c0c9810ccac2da2153c
 ```
 
-Shows version + full git commit hash.
+Shows the version and the full commit hash. `cron-when -V` prints the short form
+(`cron-when 0.5.19`).
 
 ### When installed via `cargo install`:
 ```bash
 $ cron-when --version
-cron-when 0.1.0 - unknown
+cron-when 0.5.19 - unknown
 ```
 
-Shows version + "unknown" (no git repository available).
+Shows the version and "unknown": the published crate has no git repository to read.
 
-### When downloaded from GitHub release:
+### When downloaded from a GitHub release:
 ```bash
 $ cron-when --version
-cron-when 0.1.0 - 5bb64ed
+cron-when 0.5.19 - 9eb12c44f50c63b354362c0c9810ccac2da2153c
 ```
 
-Shows version + short commit hash (if built with git info).
+Shows the version and the full hash of the release commit: the release's candidate run
+built these binaries from exactly the commit that was then tagged (see
+[RELEASING.md](../RELEASING.md)).
 
 ## Why This Matters
 
@@ -95,9 +98,11 @@ Shows version + short commit hash (if built with git info).
 - Ensure releases match source code
 
 ### For CI/CD
-- GitHub release workflow builds include commit hash
+- Release binaries report the commit their candidate run built them from
 - RPM/DEB packages can include build metadata
-- Reproducible builds can be verified
+- Binaries are not byte-for-byte reproducible (`built` records the build time), which
+  is why a release ships the candidate run's own bytes and proves them with
+  `SHA256SUMS` and build-provenance attestations instead of rebuilding
 
 ## Template Usage
 

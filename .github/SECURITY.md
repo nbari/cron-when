@@ -1,3 +1,7 @@
+<!--
+When copying this template: replace the supported versions, the contact address and
+the response times below with your project's own. They are cron-when's commitments.
+-->
 # Security Policy
 
 ## Supported Versions

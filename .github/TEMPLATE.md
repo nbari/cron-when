@@ -1,15 +1,35 @@
 # GitHub Workflows Template
 
-This directory contains reusable GitHub Actions workflows for Rust projects. The workflows automatically detect the package name from `Cargo.toml`, making them easy to copy to other projects.
+This directory holds the GitHub Actions workflows, actions and policies for Rust
+projects copied from this template. Jobs read the package name from `Cargo.toml`; the
+values to adapt by hand are listed below and, for the release flow, in
+[RELEASING.md](../RELEASING.md#adopting-this-flow-in-another-project).
 
 ## Files
 
-- **test.yml** - Run tests, formatting, and clippy checks
-- **build.yml** - Build binaries for multiple platforms (depends on tests)
-- **coverage.yml** - Generate code coverage reports
-- **security-audit.yml** - Security auditing (cargo-audit and cargo-deny)
-- **SECURITY.md** - Vulnerability reporting and supported-version policy
-- **release.yml** - Create releases and publish to crates.io
+- **workflows/build.yml** (Test & Build) - Runs on every branch push and pull request:
+  tests, coverage, the security audit, the container integration test and the builds,
+  ending with the aggregate **CI OK** check that branch protection requires
+- **workflows/test.yml** - Formatting, clippy, feature checks, the MSRV check and tests
+  on Linux, macOS and Windows (called by build.yml and release.yml)
+- **workflows/coverage.yml** - Code coverage, uploaded to Codecov and Coveralls
+- **workflows/containers.yml** - Container integration test of the static binary
+- **workflows/security-audit.yml** - cargo-audit and cargo-deny, also daily
+- **workflows/release.yml** (Release) - The build-once release workflow: a candidate
+  run builds, packages and attests everything before any tag exists, and the tag's run
+  publishes exactly those files and the crate (see [RELEASING.md](../RELEASING.md))
+- **actions/release-is-latest** - Whether a tag is the highest promoted release, asked
+  right before anything that follows the newest release acts
+- **actions/rust-toolchain** - Installs a Rust toolchain with rustup, so no
+  third-party toolchain action runs
+- **actionlint.yaml** - Silences actionlint's unknown concurrency `queue` key only
+- **dependabot.yml** - Weekly updates for crates, the pinned actions, the container
+  image and the Dev Container features
+- **SECURITY.md** - Vulnerability reporting and supported-version policy (replace its
+  contact and response times with your own)
+
+Outside this directory, the release flow also needs `scripts/release` and the release
+recipes in `.justfile`.
 
 ## How to Use as Template
 
@@ -18,7 +38,8 @@ This directory contains reusable GitHub Actions workflows for Rust projects. The
 ```bash
 cp -r .github /path/to/new-project/
 cp -r .devcontainer /path/to/new-project/
-cp deny.toml /path/to/new-project/
+cp -r scripts /path/to/new-project/
+cp .justfile deny.toml RELEASING.md /path/to/new-project/
 cp .sops.yaml.example /path/to/new-project/
 ```
 
@@ -62,7 +83,8 @@ assets = [
 depends = ""
 ```
 
-**Note:** The workflows will automatically replace `YOUR-BINARY-NAME` with the actual package name from Cargo.toml.
+**Note:** Replace `YOUR-BINARY-NAME` with your binary's name yourself; nothing rewrites
+these paths. The release workflow runs `cargo generate-rpm` and `cargo deb` with them.
 
 #### Pure Rust TLS (No OpenSSL Required)
 
@@ -121,21 +143,16 @@ When adapting this template:
 - Use a runtime feature-management system—not Cargo features—when you need live
   rollouts, targeting, or a kill switch without rebuilding and restarting.
 
-### 3. GitHub Secrets Required
+### 3. Secrets and one-time settings
 
-Set these in your repository settings (Settings → Secrets and variables → Actions):
+**For coverage.yml:** `CODECOV_TOKEN`, a token from codecov.io (optional; coverage runs
+and Coveralls uploads without it).
 
-**For coverage.yml:**
-- `CODECOV_TOKEN` - Token from codecov.io (optional, coverage will run without it)
-
-**For release.yml:**
-- `CRATES_TOKEN` - Token from crates.io for publishing
-
-To get a crates.io token:
-```bash
-cargo login
-# Find your token at: https://crates.io/settings/tokens
-```
+**For release.yml:** no secret. The crate is published with crates.io
+[Trusted Publishing](https://crates.io/docs/trusted-publishing): add a trusted publisher
+for your repository and the workflow file `release.yml` on the crate's settings page.
+The rest of the one-time setup (branches, signing key, branch protection and the
+release-tag rule) is in [RELEASING.md](../RELEASING.md#adopting-this-flow-in-another-project).
 
 ### 4. Binary Location
 
@@ -167,27 +184,18 @@ name = "your-package-name"  # ← This is used
      - Windows (x86_64-pc-windows-msvc)
    - Runs coverage and security audit in parallel
 
-### On Tag Push
+### Releases
 
-**release.yml** runs when you push a tag:
+Releases never start from a tag you push. `just deploy` stages the version bump on the
+scratch `release` branch, starts a candidate run of **release.yml** there (every test,
+build and package, kept as artifacts with a checksum manifest and provenance
+attestations, nothing published), and only when that run and Test & Build pass does it
+sign the `X.Y.Z` tag and move `develop` and `main`. The tag's run then publishes the
+candidate's files and the crate; it builds nothing.
 
-```bash
-# Full release (creates GitHub release + publishes to crates.io)
-git tag v0.1.0
-git push origin v0.1.0
-
-# Test release (builds everything but skips release/publish)
-git tag t0.1.0
-git push origin t0.1.0
-```
-
-Tags starting with `t` will:
-- ✓ Run all tests
-- ✓ Build all binaries (Linux with RPM/DEB, macOS, Windows)
-- ✗ Skip creating GitHub release
-- ✗ Skip publishing to crates.io
-
-This lets you test the full release workflow without publishing.
+Any other tag, a `t-*` test tag for instance, only tests and builds. To try the whole
+pipeline on a branch without a tag, run `just release-dry-run`. The complete
+description, including recovery, is in [RELEASING.md](../RELEASING.md).
 
 ## Security Auditing
 
@@ -231,24 +239,24 @@ ignore = [
 
 ## Release Artifacts
 
-When a non-test tag is pushed, the release includes:
+Each release carries, for version `X.Y.Z`:
 
-### Linux
-- `PACKAGE-VERSION-x86_64-unknown-linux-musl.tar.gz` (static binary)
-- `PACKAGE-VERSION.rpm` (RPM package)
-- `PACKAGE-VERSION.deb` (Debian package)
-
-### macOS
-- `PACKAGE-VERSION-x86_64-apple-darwin.tar.gz`
-
-### Windows
-- `PACKAGE-VERSION-x86_64-pc-windows-msvc.zip`
+- `PACKAGE-X.Y.Z-x86_64-unknown-linux-musl.tar.gz` and
+  `PACKAGE-X.Y.Z-aarch64-unknown-linux-musl.tar.gz` (static binaries)
+- `PACKAGE-X.Y.Z-1.x86_64.rpm`, `PACKAGE-X.Y.Z-1.aarch64.rpm`,
+  `PACKAGE_X.Y.Z-1_amd64.deb` and `PACKAGE_X.Y.Z-1_arm64.deb`
+- `PACKAGE-X.Y.Z-x86_64-apple-darwin.tar.gz`
+- `PACKAGE-X.Y.Z-x86_64-pc-windows-msvc.zip`
+- `SHA256SUMS` for all of them, plus build-provenance attestations for every file and
+  for the crate published to crates.io
 
 ## Customization
 
 ### Change Target Platforms
 
-Edit the matrix in `build.yml` and `release.yml`:
+Edit the matrix in `build.yml` and `release.yml`. In `release.yml`, also update the
+manifest job's `EXPECTED` inventory and its total file count, or the candidate run
+refuses the new set of files:
 
 ```yaml
 strategy:
@@ -271,7 +279,8 @@ strategy:
 
 ### Skip Coverage or Security
 
-Remove or comment out jobs in `build.yml`:
+Remove or comment out jobs in `build.yml`, and remove them from the `ci-ok` job's
+`needs` as well; otherwise **CI OK**, which branch protection requires, can never pass:
 
 ```yaml
 jobs:
@@ -356,12 +365,15 @@ Coverage is optional. If you don't need it:
 1. Remove the `CODECOV_TOKEN` secret requirement
 2. Or remove the coverage job from `build.yml`
 
-### Release doesn't publish to crates.io
+### A release does not publish
 
-Check:
-1. `CRATES_TOKEN` secret is set
-2. Tag doesn't start with `t`
-3. Version in `Cargo.toml` matches tag (without `v` prefix)
+Run `just release-status`: it shows the staged candidate, its runs and the tag run.
+The tag run's first job, the guard, explains any refusal in its log (an unsigned or
+unverified tag, a commit not on `main`, a version mismatch, no green Test & Build run,
+or no successful candidate run). A failed crates.io upload usually means Trusted
+Publishing is not configured for `release.yml` on the crate's settings page; fix it
+and re-run the failed job. [RELEASING.md](../RELEASING.md#when-something-fails) lists
+what to do for every failure.
 
 ## License
 

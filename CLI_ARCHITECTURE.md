@@ -32,7 +32,7 @@ cli::start()
 ┌─────────────────────────────────────────────┐
 │ 1. commands::new().get_matches()            │  Parse CLI arguments
 │    ↓                                         │
-│ 2. telemetry::Level::from(verbose_count)    │  Extract verbosity
+│ 2. get_verbosity_level(verbose_count)       │  Extract verbosity
 │    ↓                                         │
 │ 3. telemetry::init(level)                   │  Initialize logging
 │    ↓                                         │
