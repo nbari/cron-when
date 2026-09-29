@@ -264,7 +264,8 @@ uses `fail-on-error: false`, and a re-run of the coverage job uploads later.
   requires GitHub to verify the tag's signature.
 - **Branch protection as code.** `just protect-branches` sets every field explicitly:
   `main` requires **CI OK** with admins included, both branches require linear history
-  and forbid force pushes and deletions, and release tags cannot be moved or deleted.
+  and resolved review conversations and forbid force pushes and deletions, and release
+  tags cannot be moved or deleted.
 - **No long-lived registry token.** The crate is uploaded with crates.io
   [Trusted Publishing](https://crates.io/docs/trusted-publishing): the publish job asks
   GitHub for an OIDC token, crates.io exchanges it for a short-lived token for this
