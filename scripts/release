@@ -750,7 +750,7 @@ sync_branch() {
     if [[ "${old}" == "${target}" ]]; then
         echo "✅ ${SYNC_BRANCH} matches ${DEVELOP_BRANCH} (${target:0:12})"
     elif git merge-base --is-ancestor "${target}" "${old}"; then
-        SYNC_INFO="${SYNC_BRANCH} holds $(git rev-list --count "${target}..${old}") commit(s) of new work ahead of ${DEVELOP_BRANCH}; left as is (they go out with the next release)."
+        SYNC_INFO="${SYNC_BRANCH} holds $(git rev-list --count "${target}..${old}") commit(s) of new work ahead of ${DEVELOP_BRANCH}; left as is: merge them into ${DEVELOP_BRANCH} when they are ready for a release."
         echo "ℹ️  ${SYNC_INFO}"
         return 0
     elif git merge-base --is-ancestor "${old}" "${target}"; then
@@ -769,7 +769,7 @@ sync_branch() {
         }
         echo "✅ ${SYNC_BRANCH} moved to ${DEVELOP_BRANCH}, whose content it already had; its old tip ${old:0:12} stays in the reflog of origin/${SYNC_BRANCH} (restore: git push origin ${old}:refs/heads/${SYNC_BRANCH})"
     else
-        SYNC_INFO="${SYNC_BRANCH} holds changes ${DEVELOP_BRANCH} does not contain yet (new work); left as is: merge them into ${DEVELOP_BRANCH} for the next release."
+        SYNC_INFO="${SYNC_BRANCH} holds changes ${DEVELOP_BRANCH} does not contain yet (new work); left as is: merge them into ${DEVELOP_BRANCH} when they are ready for a release."
         echo "ℹ️  ${SYNC_INFO}"
         return 0
     fi

@@ -38,8 +38,9 @@ from it, checks the result, and only then creates the tag and moves `develop` an
 `main`, in one atomic push. The tag's own run builds nothing: it publishes the files
 the candidate run already built and checksummed. A failed step before the tag leaves
 nothing to clean up; rerunning `just deploy` resumes where it stopped. If publishing
-itself fails (a GitHub or crates.io outage), re-running the failed job finishes it; the
-tag never moves.
+itself fails (a GitHub or crates.io outage), re-running the failed job once the outage
+clears finishes it (GitHub allows re-runs for 30 days; after that, recovery works while
+the candidate's artifacts are kept); the tag never moves.
 
 ## Terms
 

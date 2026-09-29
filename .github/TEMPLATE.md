@@ -361,11 +361,12 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ### Coverage fails
 
-The coverage job is one of the gates **CI OK** requires. Its uploads never fail it:
-`CODECOV_TOKEN` is optional (without it the Codecov upload is skipped) and the Coveralls
-upload uses `fail-on-error: false`, so a red coverage job means the tests themselves
-failed under instrumentation. If you do not want coverage at all, remove the `coverage`
-job from `build.yml` and from the `ci-ok` job's `needs`.
+The coverage job is one of the gates **CI OK** requires. Its uploads are configured not
+to fail it: `CODECOV_TOKEN` is optional (without it the Codecov upload is skipped) and
+the Coveralls upload uses `fail-on-error: false`. When the job is red, look at the step
+that failed: usually the instrumented tests, sometimes installing or running `grcov`. If
+you do not want coverage at all, remove the `coverage` job from `build.yml` and from the
+`ci-ok` job's `needs`.
 
 ### A release does not publish
 
