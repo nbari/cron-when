@@ -335,9 +335,9 @@ as tmux, so a dropped connection does not stop it (rerunning resumes it anyway).
   WSL.
 - **What `verify_locally` needs.** It runs `cargo clean` and then `just test`, the
   project's local test suite, so whatever a release must pass locally belongs in that
-  recipe. Here `just test` is clippy, rustfmt and the unit tests; the container
-  integration test runs in CI. The [development container](README.md#development-container)
-  has everything.
+  recipe. Here `just test` is clippy, rustfmt and the unit tests, which run natively on
+  Linux and macOS; the cross-compiled builds and the container integration test run in
+  CI. The [development container](README.md#development-container) has everything.
 - **A signing key** (SSH or GPG) that is registered on GitHub as a *signing* key, with
   git configured to sign (`gpg.format`, `user.signingkey`).
 - **Rights:** push, workflow dispatch and administration on the repository.
