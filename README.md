@@ -614,7 +614,8 @@ not a real gate (the Coveralls upload) must not fail CI: its step uses
 - **Idempotent.** The release state is the `release` branch plus a local note of the
   candidate run this clone dispatched. A rerun resumes a valid candidate (signed, on the
   current `develop`, exactly the version bump, untagged), replaces a stale one (the old
-  tip is kept as `refs/backup/release/<sha>`), refuses anything else found on `release`,
+  tip is kept as the local ref `refs/backup/release/<sha>` until its version or a later one
+  is released, then removed), refuses anything else found on `release`,
   and says "nothing new to release" when `develop` is the last release, meaning tagged
   with the tag on `main`. A tag `main` lacks was never published; the deploy stops and
   explains the way out. Local `develop` is only ever fast-forwarded when origin's tip is
