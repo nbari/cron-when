@@ -573,14 +573,14 @@ flowchart TD
     merge --> deploy(["just deploy"])
     deploy --> pre{"1. Preflight"}
     pre -- fails --> stop1["Stop: nothing changed"]
-    pre -- passes --> staged{"2. Valid candidate on release?"}
-    staged -- yes --> resume["Resume it"]
-    staged -- no --> build["Build it: bump to X, verify_locally, signed commit, push to release only"]
+    pre -- passes --> staged{"2. Can an earlier deploy's candidate for X be reused?"}
+    staged -- yes --> resume["Resume it and its runs"]
+    staged -- no --> build["Build a new candidate: bump to X, verify_locally, signed commit, push to release only"]
     resume --> runs
     build --> runs
     runs[["3. Test & Build and the candidate run, on that commit"]] --> green{"Both green?"}
     green -- no --> stop2["Stop: re-run the failed jobs or fix on sandbox, then just deploy again"]
-    green -- yes --> check{"4. Manifest and artifacts match?"}
+    green -- yes --> check{"4. Candidate's files match the manifest?"}
     check -- no --> stop3["Stop: nothing promoted"]
     check -- yes --> promote["5. Signed tag X, then one atomic push of develop, main and the tag"]
     promote -- rejected --> stop4["Stop: nothing released; pull develop, then just deploy again"]
@@ -597,9 +597,14 @@ Double-bordered steps run in GitHub Actions; the others run on your machine. Eve
 sandbox ──(CI green)──▶ merge into develop ──▶ just deploy
  1. preflight       read-only: clean develop equal to origin, main can fast-forward,
                     gh logged in, git can sign, valid settings
- 2. candidate       in a temporary worktree under .git: bump the version (Cargo.toml and
-                    Cargo.lock only), run `just full-test`, make a signed commit
-                    "bump version to X", and push it to the scratch `release` branch only
+ 2. candidate       reuse the candidate an earlier, interrupted deploy left on `release`
+                    when it is still exactly right (named "bump version to X", signed,
+                    directly on the current develop, X untagged, nothing but the bump);
+                    otherwise build a new one in a temporary worktree under .git: bump
+                    the version (Cargo.toml and Cargo.lock only), run `just full-test`,
+                    make a signed commit "bump version to X", and push it to the scratch
+                    `release` branch only (a stale former candidate is replaced and kept
+                    as a local backup ref until X is released; anything else is refused)
  3. two CI runs     on that exact commit, in parallel:
                     • Test & Build
                     • Deploy in candidate mode (a manual run on `release`): every test,
@@ -621,6 +626,26 @@ sandbox ──(CI green)──▶ merge into develop ──▶ just deploy
 `just deploy` ends at step 5 ("Promoted"); step 6 runs in GitHub, and
 `just release-status` shows its state. The `X.Y.Z` tag is the only tag the flow
 creates, once, after everything that can break has passed.
+
+#### The release manifest
+
+The candidate run's last job, `manifest`, first checks that every build of the matrix
+is there with its expected number of files (`EXPECTED`), then records exactly what the
+run built in a small artifact named `release-manifest`. It ties what was tested to what
+is published: `just deploy` downloads it and every artifact it lists before tagging, the
+signed tag names the run it came from (`Candidate run: <id>`), and the tag's run and
+recovery runs publish only what it lists. Recovery therefore works while the candidate
+run's artifacts are kept (90 days by default).
+
+| File | Content (zsmtp 0.1.2, for example) | Used for |
+|---|---|---|
+| `release.env` | `VERSION=0.1.2`, `COMMIT=<candidate commit>`, `RUST=1.98.1` | Refusing a manifest for another version or commit; repackaging the crate with the toolchain that packaged it |
+| `SHA256SUMS` | The SHA-256 of every release file | Checked before tagging and again in the tag run; published as the release's own `SHA256SUMS` |
+| `CRATE.SHA256` | `<sha256>  zsmtp-0.1.2.crate` | The crate goes to crates.io only when the repackaged one has this checksum, and crates.io must report it afterwards |
+| `ARTIFACTS` | `dist-x86_64-unknown-linux-musl`, `dist-x86_64-apple-darwin`, `crate` | The artifacts the release needs: each must exist and hold exactly the listed files |
+| `IMAGES` | Projects with container images only (permesi, crono): `<image> sha256:<index digest>` | The tag run adds `X.Y.Z` (and `X.Y`, `latest` while it is the highest release) to exactly these digests |
+
+#### How release.yml treats each run
 
 One workflow file, `.github/workflows/release.yml`, serves every kind of run; its
 first job, the guard, decides what a run may do:
