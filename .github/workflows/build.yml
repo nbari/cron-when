@@ -67,30 +67,26 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Get package name from Cargo.toml
         id: package
         shell: bash
         run: |
           PACKAGE_NAME=$(awk -F '"' '/^name = / {print $2; exit}' Cargo.toml)
-          echo "name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+          echo "name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
           echo "Package name: $PACKAGE_NAME"
 
-      - name: Branch name
-        shell: bash
-        run: echo "${GITHUB_REF##*/}"
-
-      - name: Get the release version from the tag
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: ./.github/actions/rust-toolchain
         with:
           targets: ${{ matrix.target }}
 
-      - run: sudo apt -y install musl-dev musl-tools
+      - name: Install system deps (musl)
         if: startsWith(matrix.build, 'linux-')
+        run: sudo apt-get update -y && sudo apt-get install -y musl-dev musl-tools
 
       - name: Build (${{ matrix.feature-set }})
         if: matrix.feature-set == 'default'
