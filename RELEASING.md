@@ -64,6 +64,11 @@ Work lands on `sandbox`, including dependency updates (`just update`). When its
 clean `develop`. You can keep working on `sandbox` while a release runs: a release
 never touches `sandbox` while it holds work `develop` lacks, and says so at the end.
 
+Dependabot opens its update pull requests against `sandbox` too (action updates grouped
+into one a week). Review each one, and merge it into `sandbox` once its Test & Build run
+is green; from there it reaches a release like any other change. A major version bump
+of an action deserves a look at its release notes first.
+
 | Command | What it does |
 |---|---|
 | `just deploy` | Release a patch version (`deploy-minor`, `deploy-major` for the others). When `develop` already carries a version with no tag, that version is released as is instead |
@@ -278,6 +283,15 @@ uses `fail-on-error: false`, and a re-run of the coverage job uploads later.
   grouped into one a week), never into `main`, which only ever holds released commits;
   merged there, they reach a release like any other change. The Rust toolchain comes from
   `rustup` through a small local action, with no third-party code.
+- **No build cache in the release workflow.** What the candidate run builds is what
+  ships, so it builds from source only. A cache restored from another run (a Rust
+  `target/` cache, for instance) could carry anything that run wrote into the released
+  files; CI may cache, the release workflow does not.
+- **Only the secrets a workflow uses.** Keep no secret that no workflow references, and
+  when one is retired (a registry token replaced by Trusted Publishing, an old personal
+  access token), delete the secret and revoke the credential itself where it was
+  issued. `git grep 'secrets\.NAME' origin/main -- .github` shows whether a secret is
+  still used. This template needs none for releasing; `CODECOV_TOKEN` is optional.
 - **Build provenance.** The candidate run attests every release file and the crate;
   the attestations are what [Verifying a release](#verifying-a-release) checks.
 
@@ -357,6 +371,17 @@ and reads the version from `Cargo.toml`: they must match `MAIN_BRANCH`, `CI_WORK
 `CANDIDATE_WORKFLOW` and `version_at`. crates.io Trusted Publishing also names the
 workflow file: renaming `release.yml` means updating the trusted publisher too. Before the first release, search the copied files for `main`,
 `develop`, `sandbox`, `build.yml`, `release.yml`, `Cargo.toml` and the old project name.
+
+**Hardening checklist.** Before the first release of an adopted project, check that:
+every `uses:` is pinned to a full commit SHA with its version in a comment; the
+toolchain comes from `.github/actions/rust-toolchain`, not a third-party action; every
+checkout sets `persist-credentials: false`; every workflow and job asks only for the
+permissions it needs; the release workflow restores no build cache; every Cargo command
+uses `--locked`; `.github/dependabot.yml` targets the work branch; the manifest job
+attests the release files; crates are published with Trusted Publishing; no secret is
+left that no workflow uses; and `just protect-branches` has applied the "Release tags"
+rule. `actionlint` (for example `mise x actionlint@latest shellcheck@latest --
+actionlint`) must report nothing.
 
 **One-time setup, in order:**
 
