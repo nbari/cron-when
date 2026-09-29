@@ -567,6 +567,32 @@ Work, including dependency updates (`just update`), lands on `sandbox`. When its
 
 #### What `just deploy` does
 
+```mermaid
+flowchart TD
+    work["Work on sandbox, Test & Build green"] --> merge["Merge sandbox into develop"]
+    merge --> deploy(["just deploy"])
+    deploy --> pre{"1. Preflight"}
+    pre -- fails --> stop1["Stop: nothing changed"]
+    pre -- passes --> staged{"2. Valid candidate on release?"}
+    staged -- yes --> resume["Resume it"]
+    staged -- no --> build["Build it: bump to X, verify_locally, signed commit, push to release only"]
+    resume --> runs
+    build --> runs
+    runs[["3. Test & Build and the candidate run, on that commit"]] --> green{"Both green?"}
+    green -- no --> stop2["Stop: re-run the failed jobs or fix on sandbox, then just deploy again"]
+    green -- yes --> check{"4. Manifest and artifacts match?"}
+    check -- no --> stop3["Stop: nothing promoted"]
+    check -- yes --> promote["5. Signed tag X, then one atomic push of develop, main and the tag"]
+    promote -- rejected --> stop4["Stop: nothing released; pull develop, then just deploy again"]
+    promote -- lands --> tidy["Fast-forward sandbox, delete release"]
+    promote -- lands --> publish[["6. The tag's run: guard, then publish the candidate's files and crate"]]
+    republish(["just release-republish X"]) -. recovery run on main .-> publish
+```
+
+Double-bordered steps run in GitHub Actions; the others run on your machine. Every
+"Stop" leaves the tag uncreated and `develop` and `main` untouched, so rerunning
+`just deploy` is always safe. In detail:
+
 ```
 sandbox ──(CI green)──▶ merge into develop ──▶ just deploy
  1. preflight       read-only: clean develop equal to origin, main can fast-forward,
@@ -595,6 +621,18 @@ sandbox ──(CI green)──▶ merge into develop ──▶ just deploy
 `just deploy` ends at step 5 ("Promoted"); step 6 runs in GitHub, and
 `just release-status` shows its state. The `X.Y.Z` tag is the only tag the flow
 creates, once, after everything that can break has passed.
+
+One workflow file, `.github/workflows/release.yml`, serves every kind of run; its
+first job, the guard, decides what a run may do:
+
+```mermaid
+flowchart LR
+    run{"A run of release.yml"}
+    run -- "manual run on a branch (just deploy starts it on release)" --> candidate["candidate: test, build and package, keep the artifacts; publish nothing"]
+    run -- "push of an X.Y.Z tag" --> rel["release: check the tag, publish its candidate's artifacts; build nothing"]
+    run -- "manual run on main with publish: X.Y.Z" --> recover["recover: the same checks, publish with main's workflow"]
+    run -- "anything else: t-* tags, a manual run on a tag" --> testtag["test-tag: test and build only"]
+```
 
 #### When something fails
 
