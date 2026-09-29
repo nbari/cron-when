@@ -24,7 +24,8 @@ values to adapt by hand are listed below and, for the release flow, in
   third-party toolchain action runs
 - **actionlint.yaml** - Silences actionlint's unknown concurrency `queue` key only
 - **dependabot.yml** - Weekly updates for crates, the pinned actions, the container
-  image and the Dev Container features
+  image and the Dev Container features, as pull requests into `sandbox` (never `main`,
+  which only holds releases)
 - **SECURITY.md** - Vulnerability reporting and supported-version policy (replace its
   contact and response times with your own)
 

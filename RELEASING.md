@@ -274,7 +274,9 @@ uses `fail-on-error: false`, and a re-run of the coverage job uploads later.
   recovery run's `publish`, reaches the guard's script through an environment
   variable and is validated before use, never interpolated into the script.
 - **Pinned actions.** Every action is pinned to a full commit SHA with its version in
-  a comment; Dependabot proposes updates. The Rust toolchain comes from
+  a comment. Dependabot proposes updates as pull requests into `sandbox` (action updates
+  grouped into one a week), never into `main`, which only ever holds released commits;
+  merged there, they reach a release like any other change. The Rust toolchain comes from
   `rustup` through a small local action, with no third-party code.
 - **Build provenance.** The candidate run attests every release file and the crate;
   the attestations are what [Verifying a release](#verifying-a-release) checks.
@@ -340,7 +342,7 @@ The flow is generic; each project adapts the edges.
 | `.github/actions/release-is-latest/action.yml` | Nothing when the version lives in the root `Cargo.toml` and the main branch is `main`; otherwise its version lookup and branch name. Every step that follows the newest release (the Latest flag, `latest` image tags, a production deploy, docs) calls it right before acting |
 | `.github/actions/rust-toolchain/action.yml` | Nothing |
 | `.github/actionlint.yaml` | Nothing; it only silences actionlint's unknown concurrency `queue` key for `release.yml` |
-| `.github/dependabot.yml` | Keep the `github-actions` entry, which keeps the SHA pins current |
+| `.github/dependabot.yml` | Keep the `github-actions` entry, which keeps the SHA pins current, and every entry's `target-branch` set to the work branch: by default Dependabot targets the default branch, and nothing but a release may land on `main` |
 
 Project-specific files come along or get replaced as needed: the reusable workflows
 `test.yml`, `containers.yml`, `coverage.yml` and `security-audit.yml`; test helpers
