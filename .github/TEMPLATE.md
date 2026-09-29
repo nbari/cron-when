@@ -255,8 +255,8 @@ Each release carries, for version `X.Y.Z`:
 ### Change Target Platforms
 
 Edit the matrix in `build.yml` and `release.yml`. In `release.yml`, also update the
-manifest job's `EXPECTED` inventory and its total file count, or the candidate run
-refuses the new set of files:
+manifest job's `EXPECTED` inventory (each artifact and its number of files; the total is
+derived from it), or the candidate run refuses the new set of files:
 
 ```yaml
 strategy:

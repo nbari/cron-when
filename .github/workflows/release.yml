@@ -416,8 +416,10 @@ jobs:
           mkdir dist manifest
           find artifacts -type f -exec cp -n {} dist/ \;
           (cd dist && sha256sum -- *) > manifest/SHA256SUMS
-          if [[ "$(wc -l < manifest/SHA256SUMS)" -ne 8 ]]; then
-            echo "::error::Expected 8 release files (a name collision?), got $(wc -l < manifest/SHA256SUMS)."
+          total=0
+          for entry in ${EXPECTED}; do total=$((total + ${entry#*=})); done
+          if [[ "$(wc -l < manifest/SHA256SUMS)" -ne "${total}" ]]; then
+            echo "::error::Expected ${total} release files (a name collision?), got $(wc -l < manifest/SHA256SUMS)."
             exit 1
           fi
           (cd crate && sha256sum -- *.crate) > manifest/CRATE.SHA256

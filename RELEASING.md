@@ -336,7 +336,7 @@ The flow is generic; each project adapts the edges.
 | `scripts/release` | Only the configuration block at the top: branches (`DEVELOP_BRANCH` equal to `MAIN_BRANCH` for a trunk-only repository; `SYNC_BRANCH` empty when there is no work branch), `CI_WORKFLOW`, `REQUIRED_CHECK`, `CANDIDATE_WORKFLOW`, `CANDIDATE_MANIFEST`, `MAIN_PUSH_RESTRICTIONS` and `REQUIRE_CONVERSATION_RESOLUTION` (copy the repository's current values), `RELEASE_FILES`, and the `current_version`, `version_at`, `apply_bump` and `verify_locally` functions. Keep the bump cheap and deterministic: it is replayed to check a resumed candidate. `PROTECT_TAGS=false` there skips the tag ruleset |
 | `.justfile` | The release recipes (`deploy*`, `release-*`, `protect-branches`), plus whatever `verify_locally` runs |
 | `.github/workflows/build.yml` | Must run on every branch push, `release` included, and end with the aggregate **CI OK** job whose `needs` lists every job that is a real gate. When you remove a job, remove it from those `needs` too. Skip per-branch side effects (preview deploys) for `release` |
-| `.github/workflows/release.yml` | Keep the guard, the manifest job (with its attestation step) and the GitHub release job; replace the build and package jobs with the project's own, keep the manifest's `EXPECTED` inventory and file count in step with the build matrix, and rename the release job's concurrency group. Every file of every artifact the release uses must be in the manifest's checksum lists. The `crate` and `publish` jobs are for crates.io: adapt them to the project's destinations, or, when nothing goes to crates.io, remove them together with everything in the `manifest` job that depends on them (`crate` in its `needs`, the "Download this run's crate" step, the `RUST` variable, its check and its `release.env` line, the `CRATE.SHA256` line, `crate` in `ARTIFACTS` and in the attestation's `subject-path`) |
+| `.github/workflows/release.yml` | Keep the guard, the manifest job (with its attestation step) and the GitHub release job; replace the build and package jobs with the project's own, keep the manifest's `EXPECTED` inventory in step with the build matrix (the expected file count is its sum), and rename the release job's concurrency group. Every file of every artifact the release uses must be in the manifest's checksum lists. The `crate` and `publish` jobs are for crates.io: adapt them to the project's destinations, or, when nothing goes to crates.io, remove them together with everything in the `manifest` job that depends on them (`crate` in its `needs`, the "Download this run's crate" step, the `RUST` variable, its check and its `release.env` line, the `CRATE.SHA256` line, `crate` in `ARTIFACTS` and in the attestation's `subject-path`) |
 | `.github/actions/release-is-latest/action.yml` | Nothing when the version lives in the root `Cargo.toml` and the main branch is `main`; otherwise its version lookup and branch name. Every step that follows the newest release (the Latest flag, `latest` image tags, a production deploy, docs) calls it right before acting |
 | `.github/actions/rust-toolchain/action.yml` | Nothing |
 | `.github/actionlint.yaml` | Nothing; it only silences actionlint's unknown concurrency `queue` key for `release.yml` |
@@ -353,7 +353,7 @@ since every build uses `--locked` and the bump updates it.
 (`main`), the CI workflow (`build.yml`) and its own path (`.github/workflows/release.yml`),
 and reads the version from `Cargo.toml`: they must match `MAIN_BRANCH`, `CI_WORKFLOW`,
 `CANDIDATE_WORKFLOW` and `version_at`. crates.io Trusted Publishing also names the
-workflow file. Before the first release, search the copied files for `main`,
+workflow file: renaming `release.yml` means updating the trusted publisher too. Before the first release, search the copied files for `main`,
 `develop`, `sandbox`, `build.yml`, `release.yml`, `Cargo.toml` and the old project name.
 
 **One-time setup, in order:**
@@ -369,11 +369,25 @@ workflow file. Before the first release, search the copied files for `main`,
    candidate runs that way.
 4. Run `just release-dry-run` from the work branch. The run must pass and keep its
    `release-manifest` artifact.
-5. For crates.io: on the crate's settings page, add a trusted publisher for this
-   repository with the workflow file `release.yml` (see
-   [Trusted Publishing](https://crates.io/docs/trusted-publishing)). A brand-new crate
-   may need its first version published with a regular token; after that, delete any
-   registry token secret.
+5. For crates.io: on the crate's settings page
+   (`https://crates.io/crates/<crate>/settings`), under **Trusted Publishing**, add a
+   GitHub publisher with these values (see
+   [Trusted Publishing](https://crates.io/docs/trusted-publishing)):
+
+   | Field | Value |
+   |---|---|
+   | Repository owner | the GitHub user or organization, e.g. `nbari` |
+   | Repository name | the repository, e.g. `cron-when` |
+   | Workflow filename | `release.yml`: the file name only, not `.github/workflows/release.yml` |
+   | Environment | empty (the publish job uses no GitHub environment) |
+
+   A brand-new crate needs its first version published with a regular token before
+   the setting exists. After the first release published this way, check that crates.io
+   records it as published by the workflow
+   (`curl -s https://crates.io/api/v1/crates/<crate>/<version> | jq .version.trustpub_data`
+   names the repository and the run), then delete the old token secret
+   (`gh secret delete CRATES_TOKEN`) and revoke the token itself at
+   https://crates.io/settings/tokens.
 6. Back up the current protection (`gh api repos/OWNER/REPO/branches/main/protection`,
    and the same for `develop`), then run `just protect-branches` and read both back,
    with `gh api repos/OWNER/REPO/rulesets` for the tag rule.
