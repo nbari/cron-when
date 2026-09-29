@@ -429,23 +429,32 @@ jobs:
 
   # Only release tags (X.Y.Z) that passed the guard publish, and only the files of
   # their candidate run's manifest: nothing is rebuilt after CI. Safe to re-run: the
-  # release is updated in place and existing assets are overwritten.
+  # release is updated in place, existing assets are overwritten and stray ones removed;
+  # it is GitHub's Latest release only when the tag is the highest promoted release at
+  # that moment, so a late or recovered older tag never takes the Latest flag.
   release:
     name: GitHub release
     runs-on: ubuntu-latest
     needs: guard
     if: needs.guard.outputs.kind == 'release' || needs.guard.outputs.kind == 'recover'
+    concurrency:
+      group: cron-when-production-release
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
       actions: read
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Download the candidate run's manifest
         uses: actions/download-artifact@v8
         with:
           run-id: ${{ needs.guard.outputs.candidate_run }}
           github-token: ${{ github.token }}
           name: release-manifest
-          path: manifest
+          path: ${{ runner.temp }}/manifest
 
       - name: Download the candidate run's assets
         uses: actions/download-artifact@v8
@@ -454,7 +463,7 @@ jobs:
           github-token: ${{ github.token }}
           pattern: dist-*
           merge-multiple: true
-          path: dist
+          path: ${{ runner.temp }}/dist
 
       - name: Check the assets against the manifest
         shell: bash
@@ -463,6 +472,7 @@ jobs:
           TAG_COMMIT: ${{ needs.guard.outputs.commit }}
         run: |
           set -euo pipefail
+          cd "${RUNNER_TEMP}"
           . manifest/release.env
           if [[ "${VERSION}" != "${TAG_VERSION}" || "${COMMIT}" != "${TAG_COMMIT}" ]]; then
             echo "::error::The candidate manifest is for ${VERSION} at ${COMMIT}, not ${TAG_VERSION} at ${TAG_COMMIT}."
@@ -478,12 +488,41 @@ jobs:
           (cd dist && sha256sum -c ../manifest/SHA256SUMS)
           cp manifest/SHA256SUMS dist/
 
+      - name: Is this the latest release
+        id: latest
+        uses: ./.github/actions/release-is-latest
+        with:
+          tag: ${{ needs.guard.outputs.tag }}
+          token: ${{ github.token }}
+
       - name: Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.guard.outputs.tag }}
           draft: false
-          files: dist/*
+          make_latest: ${{ steps.latest.outputs.latest }}
+          files: ${{ runner.temp }}/dist/*
+
+      - name: Keep exactly the manifest's files on the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.guard.outputs.tag }}
+        run: |
+          set -euo pipefail
+          expected="$(find "${RUNNER_TEMP}/dist" -maxdepth 1 -type f -printf '%f\n' | sort)"
+          while read -r asset; do
+            [[ -n "${asset}" ]] || continue
+            if ! grep -qxF "${asset}" <<<"${expected}"; then
+              echo "Removing ${asset}, which is not in the candidate manifest."
+              gh release delete-asset "${TAG}" "${asset}" --repo "${GITHUB_REPOSITORY}" --yes
+            fi
+          done < <(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')
+          actual="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' | sort)"
+          if [[ "${actual}" != "${expected}" ]]; then
+            echo "::error::Release ${TAG} holds $(tr '\n' ' ' <<<"${actual}"), expected $(tr '\n' ' ' <<<"${expected}")."
+            exit 1
+          fi
 
   # Upload the crate the candidate run packaged and verified, after the GitHub release,
   # from a clean checkout of the tag.

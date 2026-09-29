@@ -587,8 +587,9 @@ sandbox ──(CI green)──▶ merge into develop ──▶ just deploy
                     sandbox in step and delete `release` (warnings say when it cannot)
  6. tag run         Deploy again, publish only: the guard checks the tag (signature, on
                     main, version, Test & Build, the named candidate run), then the
-                    GitHub release gets exactly the manifest's files and the crate goes
-                    to crates.io; nothing is built
+                    GitHub release gets exactly the manifest's files (stray ones are
+                    removed; it is marked Latest only while the tag is the highest
+                    promoted release) and the crate goes to crates.io; nothing is built
 ```
 
 `just deploy` ends at step 5 ("Promoted"); step 6 runs in GitHub, and
@@ -625,13 +626,21 @@ not a real gate (the Coveralls upload) must not fail CI: its step uses
   upload a prepared `.crate`, so `cargo publish` repackages the tag's source with the
   candidate's toolchain, without building. That is byte-reproducible, and the checksum is
   compared with the manifest before the upload and with crates.io's after it.
+- **Nothing rolls back.** Steps that follow the newest release (here GitHub's Latest
+  flag) ask `.github/actions/release-is-latest` at the moment they act, and the release
+  job runs one at a time across tags (`queue: max`), so a late, re-run or recovered job
+  of an older tag never takes it back. A tag made by this flow cannot be misused either:
+  a manual run on a tag is a test build, and recovery always runs `main`'s workflow.
 - **Limits.** Recovery needs the candidate run's artifacts to be unexpired (90 days by
   default; check each repository's Actions retention setting), and "Re-run failed jobs"
   works for 30 days; beyond that, the next patch release is the way forward. The script follows the run id `gh workflow run` prints; with an older
   `gh` that prints none, it waits 15 minutes before dispatching again. Signing uses your
   SSH agent: if it is locked, the deploy stops before anything is promoted (the preflight
   already tries a signature; at worst a candidate is left on `release`), and a rerun
-  resumes once it is unlocked.
+  resumes once it is unlocked. Tags created before a project adopted this flow keep the
+  workflows they were tagged with: never dispatch a workflow on such a tag or re-run its
+  old run, since that old code publishes without any of these checks; publish again with
+  `just release-republish X.Y.Z`, which runs `main`'s workflow.
 
 #### Settings
 
@@ -652,7 +661,9 @@ described:
 | `scripts/release` | The configuration block at the top: branches (`DEVELOP_BRANCH` equal to `MAIN_BRANCH` for a trunk-only repository), `CI_WORKFLOW`, `REQUIRED_CHECK`, `CANDIDATE_WORKFLOW` (empty when there is nothing to package), `CANDIDATE_MANIFEST`, `MAIN_PUSH_RESTRICTIONS` and `REQUIRE_CONVERSATION_RESOLUTION` (copy the repository's current values), `RELEASE_FILES`, and the `current_version`, `version_at`, `apply_bump` and `verify_locally` functions. Keep the bump cheap and deterministic: it is replayed to check a resumed candidate |
 | `.justfile` | The release recipes above, plus whatever `verify_locally` runs (here `just full-test`) |
 | `.github/workflows/build.yml` | Must run on every branch push, `release` included, and end with the aggregate **CI OK** job listing the jobs that are real gates. Skip per-branch side effects (preview deploys) for `release` |
-| `.github/workflows/release.yml` | Keep the guard (`candidate`, `release`, `recover`, `test-tag`), the manifest job and the GitHub release job; replace the build and package jobs with the project's own, and keep the manifest job's `EXPECTED` inventory in step with the build matrix. Every file of every artifact the release uses must be in the manifest's checksum lists. The `crate` and `publish` jobs are for crates.io: adapt them to the project's destinations (images, registries), or, when nothing goes to crates.io, remove them together with everything in the `manifest` job that depends on them: `crate` in its `needs`, the "Download this run's crate" step, the `RUST` variable, its check and its `release.env` line, the `CRATE.SHA256` line, and `crate` in `ARTIFACTS` |
+| `.github/workflows/release.yml` | Keep the guard (`candidate`, `release`, `recover`, `test-tag`), the manifest job and the GitHub release job (with its latest check, the stray-file cleanup and its concurrency group, renamed for the project); replace the build and package jobs with the project's own, and keep the manifest job's `EXPECTED` inventory in step with the build matrix. Every file of every artifact the release uses must be in the manifest's checksum lists. The `crate` and `publish` jobs are for crates.io: adapt them to the project's destinations (images, registries), or, when nothing goes to crates.io, remove them together with everything in the `manifest` job that depends on them: `crate` in its `needs`, the "Download this run's crate" step, the `RUST` variable, its check and its `release.env` line, the `CRATE.SHA256` line, and `crate` in `ARTIFACTS` |
+| `.github/actions/release-is-latest/action.yml` | Nothing, when the version lives in the root `Cargo.toml` and the main branch is `main`; otherwise its version lookup and branch name. Every step that follows the newest release (Latest flag, `latest` image tags, a production deploy, docs) calls it right before acting |
+| `.github/actionlint.yaml` | Only while actionlint does not know the concurrency `queue` key: it ignores that one message for `release.yml` |
 | `.github/workflows/coverage.yml` | Third-party uploads never fail the job |
 
 These are project-specific, so copy or replace them as the project needs:
