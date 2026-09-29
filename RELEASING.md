@@ -117,7 +117,7 @@ is handled as [When something fails](#when-something-fails) describes. In detail
    signed, directly on the current `develop`, X untagged, nothing but the version
    bump). Otherwise a new one is built in a temporary worktree under `.git`, so your
    checkout never changes: bump the version (`Cargo.toml` and `Cargo.lock` only), run
-   the local verification (`just full-test` here), make a signed commit, and push it to
+   the local verification (`cargo clean`, then `just test`), make a signed commit, and push it to
    `release` only. A stale former candidate is replaced and kept as a local backup ref
    until its version is released; anything on `release` that is not a former candidate
    is refused, never overwritten.
@@ -333,10 +333,11 @@ as tmux, so a dropped connection does not stop it (rerunning resumes it anyway).
   `cargo`, cargo-edit and the SHA-256 tool before anything changes. The script uses no
   bash 4 features and no GNU-only flags, so Linux and macOS both work; on Windows, use
   WSL.
-- **What `verify_locally` needs.** Here that is `just full-test`: the
-  `x86_64-unknown-linux-musl` target with musl tools and a working Podman for the
-  container integration test. The [development container](README.md#development-container)
-  has all of it.
+- **What `verify_locally` needs.** It runs `cargo clean` and then `just test`, the
+  project's local test suite, so whatever a release must pass locally belongs in that
+  recipe. Here `just test` is clippy, rustfmt and the unit tests; the container
+  integration test runs in CI. The [development container](README.md#development-container)
+  has everything.
 - **A signing key** (SSH or GPG) that is registered on GitHub as a *signing* key, with
   git configured to sign (`gpg.format`, `user.signingkey`).
 - **Rights:** push, workflow dispatch and administration on the repository.
@@ -349,8 +350,8 @@ The flow is generic; each project adapts the edges.
 
 | File | What to adapt |
 |---|---|
-| `scripts/release` | Only the configuration block at the top: branches (`DEVELOP_BRANCH` equal to `MAIN_BRANCH` for a trunk-only repository; `SYNC_BRANCH` empty when there is no work branch), `CI_WORKFLOW`, `REQUIRED_CHECK`, `CANDIDATE_WORKFLOW`, `CANDIDATE_MANIFEST`, `MAIN_PUSH_RESTRICTIONS` and `REQUIRE_CONVERSATION_RESOLUTION` (copy the repository's current values), `RELEASE_FILES`, and the `current_version`, `version_at`, `apply_bump` and `verify_locally` functions. Keep the bump cheap and deterministic: it is replayed to check a resumed candidate. `PROTECT_TAGS=false` there skips the tag ruleset |
-| `.justfile` | The release recipes (`deploy*`, `release-*`, `protect-branches`), plus whatever `verify_locally` runs |
+| `scripts/release` | Only the configuration block at the top: branches (`DEVELOP_BRANCH` equal to `MAIN_BRANCH` for a trunk-only repository; `SYNC_BRANCH` empty when there is no work branch), `CI_WORKFLOW`, `REQUIRED_CHECK`, `CANDIDATE_WORKFLOW`, `CANDIDATE_MANIFEST`, `MAIN_PUSH_RESTRICTIONS` (`null`, or the users allowed to push to `main` in an organization repository) and `REQUIRE_CONVERSATION_RESOLUTION` (`true`), `RELEASE_FILES`, and the `current_version`, `version_at`, `apply_bump` and `verify_locally` functions. Keep the bump cheap and deterministic: it is replayed to check a resumed candidate. `PROTECT_TAGS=false` there skips the tag ruleset |
+| `.justfile` | The release recipes (`deploy*`, `release-*`, `protect-branches`), plus a `test` recipe with everything a release must pass locally (`verify_locally` runs `cargo clean` and then `just test`) |
 | `.github/workflows/build.yml` | Must run on every branch push, `release` included, and end with the aggregate **CI OK** job whose `needs` lists every job that is a real gate. When you remove a job, remove it from those `needs` too. Skip per-branch side effects (preview deploys) for `release` |
 | `.github/workflows/release.yml` | Keep the guard, the manifest job (with its attestation step) and the GitHub release job; replace the build and package jobs with the project's own, keep the manifest's `EXPECTED` inventory in step with the build matrix (the expected file count is its sum), and rename the release job's concurrency group. Every file of every artifact the release uses must be in the manifest's checksum lists. The `crate` and `publish` jobs are for crates.io: adapt them to the project's destinations, or, when nothing goes to crates.io, remove them together with everything in the `manifest` job that depends on them (`crate` in its `needs`, the "Download this run's crate" step, the `RUST` variable, its check and its `release.env` line, the `CRATE.SHA256` line, `crate` in `ARTIFACTS` and in the attestation's `subject-path`) |
 | `.github/actions/release-is-latest/action.yml` | Nothing when the version lives in the root `Cargo.toml` and the main branch is `main`; otherwise its version lookup and branch name. Every step that follows the newest release (the Latest flag, `latest` image tags, a production deploy, docs) calls it right before acting |

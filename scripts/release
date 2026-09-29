@@ -74,9 +74,9 @@ CI_WORKFLOW="build.yml"          # workflow that runs on every branch push, STAG
 REQUIRED_CHECK="CI OK"           # aggregate job in CI_WORKFLOW that branch protection requires
 CANDIDATE_WORKFLOW="release.yml" # tag workflow dispatched on the candidate (packages, publishes nothing); empty skips it
 CANDIDATE_MANIFEST="release-manifest" # artifact the candidate run must keep for the tag to publish
-MAIN_PUSH_RESTRICTIONS='null'    # JSON: who may push to MAIN_BRANCH; null for user repos, org repos
-                                 # may list them, e.g. '{"users":["me"],"teams":[],"apps":[]}'
-REQUIRE_CONVERSATION_RESOLUTION=false # PR setting; keep what the repository already uses
+MAIN_PUSH_RESTRICTIONS='null'    # JSON: who may push to MAIN_BRANCH; null keeps anyone with write access
+                                 # (org repos may list them, e.g. '{"users":["me"],"teams":[],"apps":[]}')
+REQUIRE_CONVERSATION_RESOLUTION=true # require resolved review conversations on MAIN_BRANCH and DEVELOP_BRANCH
 RELEASE_FILES=(Cargo.toml Cargo.lock)
 
 current_version() {
@@ -94,10 +94,14 @@ apply_bump() {
     cargo update --workspace
 }
 
-# Local fast fail before the candidate is pushed; CI on that commit is the real gate.
+# Local fast fail before the candidate is pushed; CI and the candidate run on that commit
+# are the real gate. It runs in a fresh worktree whose own target directory is used, so
+# `cargo clean` never touches a shared build cache; `just test` is the project's local
+# test suite, so whatever a release must pass locally belongs in that recipe.
 verify_locally() {
+    export CARGO_TARGET_DIR="${PWD}/target"
     cargo clean
-    just full-test
+    just test
 }
 # --- End of project configuration ---
 # Optional in the configuration block: PROTECT_TAGS=false keeps `protect` from managing
