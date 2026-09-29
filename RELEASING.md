@@ -31,12 +31,15 @@ archive or the RPM fails, the tag has to be deleted and pushed again, the crate 
 already be on crates.io while the binaries are not, and `main` holds a version bump
 for a release that never happened. Every retry is another chance to get it wrong.
 
-Here nothing that can fail happens after the tag. `just deploy` makes the version bump
+Here every test, build and package passes before the tag exists; only publishing
+happens after it. `just deploy` makes the version bump
 on a scratch branch, lets CI test that exact commit and build and package everything
 from it, checks the result, and only then creates the tag and moves `develop` and
 `main`, in one atomic push. The tag's own run builds nothing: it publishes the files
 the candidate run already built and checksummed. A failed step before the tag leaves
-nothing to clean up; rerunning `just deploy` resumes where it stopped.
+nothing to clean up; rerunning `just deploy` resumes where it stopped. If publishing
+itself fails (a GitHub or crates.io outage), re-running the failed job finishes it; the
+tag never moves.
 
 ## Terms
 
@@ -64,8 +67,8 @@ never touches `sandbox` while it holds work `develop` lacks, and says so at the 
 |---|---|
 | `just deploy` | Release a patch version (`deploy-minor`, `deploy-major` for the others). When `develop` already carries a version with no tag, that version is released as is instead |
 | `just deploy-current` | Release `develop`'s untagged version as is, explicitly |
-| `just release-status` | Show `develop`, `main`, `sandbox`, the staged candidate and its runs, and the last tag's publish run |
-| `just release-preflight` | Run only the checks; changes nothing apart from fetching |
+| `just release-status` | Show `develop`, `main`, `sandbox`, the staged candidate and its runs, and the publish run of `develop`'s version when that version is tagged |
+| `just release-preflight` | Run only the checks; changes nothing that lasts (it fetches, and signs and deletes a temporary local tag to test the key) |
 | `just release-dry-run` | Build and package the current branch exactly like a candidate, releasing nothing: no version bump, no tag |
 | `just release-republish X.Y.Z` | Recovery: publish an existing tag again with `main`'s workflow |
 | `just protect-branches` | Apply the branch protection and the release-tag rule the flow relies on |
@@ -94,13 +97,15 @@ flowchart TD
     republish(["just release-republish X"]) -. recovery run on main .-> publish
 ```
 
-Double-bordered steps run in GitHub Actions; the others run on your machine. Every
-"Stop" happens before the tag exists and leaves `develop` and `main` untouched, so
-rerunning `just deploy` is always safe. In detail:
+Double-bordered steps run in GitHub Actions; the others run on your machine. The four
+"Stop" boxes all happen before the tag exists and leave `develop` and `main` untouched,
+so rerunning `just deploy` is always safe; a failure in step 6 comes after promotion and
+is handled as [When something fails](#when-something-fails) describes. In detail:
 
-1. **Preflight** (read-only apart from a fetch): a clean `develop` equal to its origin
-   copy, `main` able to fast-forward to it, `gh` logged in, the required tools present,
-   valid settings, and a working signing key (a throwaway tag exercises it).
+1. **Preflight**, which changes nothing that lasts (it fetches, and signs and deletes a
+   temporary local tag): a clean `develop` equal to its origin copy, `main` able to
+   fast-forward to it, `gh` logged in, git 2.31 or later, `jq`, `cargo`, cargo-edit and
+   a SHA-256 tool, valid settings, and a working signing key.
 2. **Candidate.** An earlier, interrupted deploy may have left a candidate on
    `release`; it is reused when it is still exactly right (named `bump version to X`,
    signed, directly on the current `develop`, X untagged, nothing but the version
@@ -204,9 +209,11 @@ uses `fail-on-error: false`, and a re-run of the coverage job uploads later.
   `develop` is the last release. It never bumps twice and never tags without passing
   runs.
 - *Releases are immutable.* The "Release tags" ruleset (`just protect-branches`) lets
-  `X.Y.Z` tags be created but never moved or deleted, by anyone.
-- *Nothing rolls back.* GitHub's Latest flag follows the highest promoted release: the
-  release job asks `.github/actions/release-is-latest` at the moment it publishes, and
+  version-like tags (`refs/tags/[0-9]*.[0-9]*.[0-9]*`, which every `X.Y.Z` matches) be
+  created but never moved or deleted, by anyone.
+- *Nothing rolls back.* GitHub's Latest flag follows the highest release that
+  `.github/actions/release-is-latest` counts (a GitHub-verified tag on `main` whose
+  commit carries that version): the release job asks it at the moment it publishes, and
   it runs one tag at a time (`queue: max`), so a late, re-run or recovered older tag
   never takes it back. A tag made by this flow cannot be misused either: a manual run on
   a tag is only a test build, and recovery always runs `main`'s workflow.
@@ -240,6 +247,9 @@ uses `fail-on-error: false`, and a re-run of the coverage job uploads later.
 - *Signing uses your key.* When the SSH or GPG agent is locked, the deploy stops before
   anything is promoted (the preflight already tries a signature; at worst a candidate is
   left on `release`), and a rerun resumes once it is unlocked.
+- *Candidate runs are found by the run id `gh workflow run` prints.* With an older
+  `gh` that prints none, the deploy waits up to 15 minutes for the run to be listed
+  before starting another one, which at worst costs a duplicate build.
 
 ## Security
 
@@ -252,8 +262,9 @@ uses `fail-on-error: false`, and a re-run of the coverage job uploads later.
 - **No long-lived registry token.** The crate is uploaded with crates.io
   [Trusted Publishing](https://crates.io/docs/trusted-publishing): the publish job asks
   GitHub for an OIDC token, crates.io exchanges it for a short-lived token for this
-  workflow only, and the token is revoked when the job ends. No crates.io secret is
-  stored in the repository.
+  workflow only, and the token is revoked when the job ends. The workflow uses no
+  registry secret; once the first release published this way succeeds, delete any old
+  token secret (`CRATES_TOKEN` in older copies of this template).
 - **Least privilege.** Workflows are read-only by default. Only the manifest job may
   sign provenance (`id-token`, `attestations`), only the GitHub release job may write
   the repository (`contents: write`), and only the publish job may request the
@@ -275,13 +286,17 @@ Every release carries `SHA256SUMS` and build-provenance attestations:
 # The files you downloaded are the ones the release lists
 sha256sum --check --ignore-missing SHA256SUMS
 
-# GitHub Actions built exactly these bytes, from this repository's release workflow
-gh attestation verify cron-when-0.5.20-x86_64-unknown-linux-musl.tar.gz --repo nbari/cron-when
+# GitHub Actions built exactly these bytes, in this repository's release workflow
+gh attestation verify cron-when-0.5.20-x86_64-unknown-linux-musl.tar.gz \
+  --repo nbari/cron-when \
+  --signer-workflow nbari/cron-when/.github/workflows/release.yml
 ```
 
-The crate on crates.io has the same checksum as the attested one: download it
+`--repo` alone proves the file was built in this repository; `--signer-workflow` also
+proves it was the release workflow that built it. The crate on crates.io has the same
+checksum as the attested one: download it
 (`https://crates.io/api/v1/crates/cron-when/<version>/download`) and run the same
-`gh attestation verify` command on it.
+command on it.
 
 ## Settings
 

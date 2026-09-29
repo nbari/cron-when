@@ -361,13 +361,16 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ### Coverage fails
 
-Coverage is optional. If you don't need it:
-1. Remove the `CODECOV_TOKEN` secret requirement
-2. Or remove the coverage job from `build.yml`
+The coverage job is one of the gates **CI OK** requires. Its uploads never fail it:
+`CODECOV_TOKEN` is optional (without it the Codecov upload is skipped) and the Coveralls
+upload uses `fail-on-error: false`, so a red coverage job means the tests themselves
+failed under instrumentation. If you do not want coverage at all, remove the `coverage`
+job from `build.yml` and from the `ci-ok` job's `needs`.
 
 ### A release does not publish
 
-Run `just release-status`: it shows the staged candidate, its runs and the tag run.
+Run `just release-status`: it shows the staged candidate and its runs, and the tag run
+of `develop`'s version once that version is tagged.
 The tag run's first job, the guard, explains any refusal in its log (an unsigned or
 unverified tag, a commit not on `main`, a version mismatch, no green Test & Build run,
 or no successful candidate run). A failed crates.io upload usually means Trusted

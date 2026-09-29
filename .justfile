@@ -97,7 +97,7 @@ release-republish version:
 release-status:
     @scripts/release status
 
-# Check everything a release needs; changes nothing apart from fetching
+# Check everything a release needs; changes nothing that lasts
 release-preflight:
     @scripts/release preflight
 

@@ -7,7 +7,8 @@
 # knows as a signing key.
 #
 # Flow overview (`scripts/release deploy <patch|minor|major|current>`)
-#   1. Preflight, before anything changes (read-only apart from a fetch): a clean
+#   1. Preflight, before anything changes (nothing lasting: a fetch, and a temporary
+#      local tag signed and deleted to test the key): a clean
 #      DEVELOP_BRANCH equal to its origin copy, MAIN_BRANCH able to fast-forward to it,
 #      an authenticated gh, valid settings and a working signing setup (a throwaway
 #      tag exercises the key).
@@ -103,6 +104,7 @@ verify_locally() {
 # the "Release tags" ruleset.
 PROTECT_TAGS="${PROTECT_TAGS:-true}"
 SYNC_NOTE=""
+SYNC_INFO=""
 
 POLL_SECONDS="${RELEASE_POLL_SECONDS:-30}"
 CI_TIMEOUT="${RELEASE_CI_TIMEOUT:-3600}"
@@ -216,13 +218,14 @@ check_remote() {
     git tag -s "${probe}" -m "signing probe" HEAD >/dev/null 2>&1 ||
         die "git could not sign a tag; check the signing key or agent."
     git tag -d "${probe}" >/dev/null
-    if [[ -n "${SSH_CONNECTION:-}" && -z "${HERDR_ENV:-}" && -z "${TMUX:-}" ]]; then
-        echo "⚠️  On SSH outside Herdr/tmux: a dropped connection stops the wait; rerun the deploy to resume."
+    if [[ -n "${SSH_CONNECTION:-}" && -z "${TMUX:-}${STY:-}${ZELLIJ:-}${HERDR_ENV:-}" ]]; then
+        echo "⚠️  On SSH outside a terminal multiplexer: a dropped connection stops the wait; rerun the deploy to resume."
     fi
 }
 
-# Everything a release needs, checked before anything is changed or pushed. Read-only
-# apart from the fetch; deploy passes `catch-up` to first fast-forward a local
+# Everything a release needs, checked before anything is changed or pushed. Nothing it
+# does lasts (a fetch, and a signed probe tag deleted at once); deploy passes `catch-up`
+# to first fast-forward a local
 # DEVELOP_BRANCH that is behind a release which already landed on origin.
 preflight() {
     check_local
@@ -732,8 +735,9 @@ promote() {
 
 # Keep SYNC_BRANCH equal to DEVELOP_BRANCH: fast-forward it, or move it with
 # --force-with-lease when its content was squash-merged (no backup ref: the old tip
-# stays in the reflog of origin/<branch>); leave a branch that is ahead or holds
-# unmerged work alone. Never fails the release.
+# stays in the reflog of origin/<branch>); leave a branch that holds new work alone and
+# say so as information (SYNC_INFO), since working on it during a release is normal.
+# Only a failed update is a warning (SYNC_NOTE). Never fails the release.
 sync_branch() {
     [[ -n "${SYNC_BRANCH}" ]] || return 0
     local target old local_tip
@@ -746,7 +750,8 @@ sync_branch() {
     if [[ "${old}" == "${target}" ]]; then
         echo "✅ ${SYNC_BRANCH} matches ${DEVELOP_BRANCH} (${target:0:12})"
     elif git merge-base --is-ancestor "${target}" "${old}"; then
-        echo "ℹ️  ${SYNC_BRANCH} is ahead of ${DEVELOP_BRANCH}; left as is."
+        SYNC_INFO="${SYNC_BRANCH} holds $(git rev-list --count "${target}..${old}") commit(s) of new work ahead of ${DEVELOP_BRANCH}; left as is (they go out with the next release)."
+        echo "ℹ️  ${SYNC_INFO}"
         return 0
     elif git merge-base --is-ancestor "${old}" "${target}"; then
         git push --quiet origin "${target}:refs/heads/${SYNC_BRANCH}" || {
@@ -764,8 +769,8 @@ sync_branch() {
         }
         echo "✅ ${SYNC_BRANCH} moved to ${DEVELOP_BRANCH}, whose content it already had; its old tip ${old:0:12} stays in the reflog of origin/${SYNC_BRANCH} (restore: git push origin ${old}:refs/heads/${SYNC_BRANCH})"
     else
-        SYNC_NOTE="${SYNC_BRANCH} has changes ${DEVELOP_BRANCH} does not contain, so it was left alone; merge them into ${DEVELOP_BRANCH} (they go out with the next release)."
-        echo "⚠️  ${SYNC_NOTE}" >&2
+        SYNC_INFO="${SYNC_BRANCH} holds changes ${DEVELOP_BRANCH} does not contain yet (new work); left as is: merge them into ${DEVELOP_BRANCH} for the next release."
+        echo "ℹ️  ${SYNC_INFO}"
         return 0
     fi
     if git show-ref --verify --quiet "refs/heads/${SYNC_BRANCH}" && [[ "$(git branch --show-current)" != "${SYNC_BRANCH}" ]]; then
@@ -794,6 +799,7 @@ deploy() {
             finish_release "${base}"
             echo "✅ ${DEVELOP_BRANCH} is release ${current}; nothing new to release."
             [[ -z "${SYNC_NOTE}" ]] || echo "⚠️  ${SYNC_NOTE}"
+            [[ -z "${SYNC_INFO}" ]] || echo "ℹ️  ${SYNC_INFO}"
             return 0
         fi
         [[ "${kind}" != "current" ]] ||
@@ -856,6 +862,7 @@ deploy() {
     fi
     echo "🔗 Monitor the release: https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "<owner>/<repo>")/actions"
     [[ -z "${SYNC_NOTE}" ]] || echo "⚠️  Released, but: ${SYNC_NOTE}"
+    [[ -z "${SYNC_INFO}" ]] || echo "ℹ️  ${SYNC_INFO}"
 }
 
 # Local backups of replaced candidates (refs/backup/<STAGING_BRANCH>/*) only matter
@@ -1017,7 +1024,7 @@ dry_run() {
     [[ "$(remote_tip "${branch}")" == "${sha}" ]] ||
         die "${branch} differs from origin/${branch}; push it first (the run builds origin's copy)."
     output="$(gh workflow run "${CANDIDATE_WORKFLOW}" --ref "${branch}" 2>&1)" || die "Could not start the run: ${output}"
-    echo "🚀 Started ${CANDIDATE_WORKFLOW} on ${branch} (${sha:0:12}): every test, build and package of version $(current_version), kept as artifacts; nothing is released."
+    echo "🚀 Started ${CANDIDATE_WORKFLOW} on ${branch} (${sha:0:12}): every test, build and package of version $(version_at HEAD), kept as artifacts; nothing is released."
     echo "🔗 $(grep -oE 'https://[^ ]+/actions/runs/[0-9]+' <<<"${output}" || echo "See the Actions tab.")"
 }
 

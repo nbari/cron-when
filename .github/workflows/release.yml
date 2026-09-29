@@ -543,7 +543,7 @@ jobs:
             echo
             echo '```sh'
             echo 'sha256sum --check --ignore-missing SHA256SUMS'
-            echo "gh attestation verify <file> --repo ${GITHUB_REPOSITORY}"
+            echo "gh attestation verify <file> --repo ${GITHUB_REPOSITORY} --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/release.yml"
             echo '```'
           } > "${RUNNER_TEMP}/notes.md"
           cat "${RUNNER_TEMP}/notes.md"
