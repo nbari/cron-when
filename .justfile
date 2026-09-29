@@ -67,40 +67,21 @@ clean:
 version:
     @cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'
 
-# Check if working directory is clean
-check-clean:
-    #!/usr/bin/env bash
-    if [[ -n $(git status --porcelain) ]]; then
-        echo "❌ Working directory is not clean. Commit or stash your changes first."
-        git status --short
-        exit 1
-    fi
-    echo "✅ Working directory is clean"
+# Releases (see RELEASING.md): the version bump is staged on the scratch `release`
+# branch, CI and a candidate run of release.yml test and package that exact commit, and
+# only then do develop, main and the signed tag move together; the tag's run publishes
+# exactly what the candidate built. Every deploy recipe is idempotent: rerunning it
+# resumes the staged candidate, or says there is nothing left to release.
 
-# Check if on develop branch
-check-develop:
-    #!/usr/bin/env bash
-    current_branch=$(git branch --show-current)
-    if [[ "$current_branch" != "develop" ]]; then
-        echo "❌ Not on develop branch (currently on: $current_branch)"
-        echo "Switch to develop branch first: git checkout develop"
-        exit 1
-    fi
-    echo "✅ On develop branch"
-
-# Releases stage the bump on the `release` branch, let CI test that exact commit, then
-# move develop, main and the tag together; see scripts/release. Every deploy recipe is
-# idempotent: rerunning it resumes the staged candidate or says nothing is left to do.
-
-# Deploy: stage a patch bump, wait for CI on it, then release it
+# Release a patch version: stage the bump, test and package it, then promote it
 deploy:
     @scripts/release deploy patch
 
-# Deploy with minor version bump
+# Release a minor version (X.Y+1.0)
 deploy-minor:
     @scripts/release deploy minor
 
-# Deploy with major version bump
+# Release a major version (X+1.0.0)
 deploy-major:
     @scripts/release deploy major
 
@@ -112,7 +93,7 @@ deploy-current:
 release-republish version:
     @scripts/release republish {{version}}
 
-# Show where a release stands: develop, main, the staged candidate and its CI run
+# Show where a release stands: develop, main, sandbox, the staged candidate and its runs
 release-status:
     @scripts/release status
 
@@ -120,36 +101,13 @@ release-status:
 release-preflight:
     @scripts/release preflight
 
-# Apply the branch protection the release flow relies on (main requires "CI OK")
+# Apply branch protection (main requires "CI OK") and the rule that release tags never move
 protect-branches:
     @scripts/release protect
 
-# Create & push a test tag like t-YYYYMMDD-HHMMSS (skips publish/release in CI)
-# Usage:
-#   just t-deploy
-#   just t-deploy "optional tag message"
-t-deploy message="CI test": check-develop check-clean full-test
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    TAG_MESSAGE="{{message}}"
-    ts="$(date -u +%Y%m%d-%H%M%S)"
-    tag="t-${ts}"
-
-    echo "🏷️  Creating signed test tag: ${tag}"
-    git fetch --tags --quiet
-
-    if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-        echo "❌ Tag ${tag} already exists. Aborting." >&2
-        exit 1
-    fi
-
-    git tag -s "${tag}" -m "${TAG_MESSAGE}"
-    git push origin "${tag}"
-
-    echo "✅ Pushed ${tag}"
-    echo "🧹 To remove it:"
-    echo "   git push origin :refs/tags/${tag} && git tag -d ${tag}"
+# Build and package the current branch like a release candidate; releases nothing, no tag
+release-dry-run:
+    @scripts/release dry-run
 
 # Check for security vulnerabilities
 audit:
