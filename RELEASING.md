@@ -55,7 +55,8 @@ Work, including dependency updates, lands on `sandbox`.
    bump is present and right.
 2. When **Test & Build** is green on `sandbox`, fast-forward `develop` to that commit
    and push. The `CI OK` check is attached to the commit, so the run that passed on
-   `sandbox` already counts; there is no need to wait for `develop`'s own run.
+   `sandbox` already counts for the release guard, and you can run `just release` at
+   once; it waits for `develop`'s own run before it moves `main`.
 3. Run `just release`. It starts the Release workflow on `develop` and follows the run.
 
 Keep `develop` fast-forward only, so the history stays linear and `main` can always
@@ -64,8 +65,8 @@ commit changes and CI has to run again.
 
 ## How a release works
 
-`just release` is one line: `gh workflow run release.yml --ref develop`, followed by
-`gh run watch`. Everything else is the workflow:
+`just release` starts the workflow (`gh workflow run release.yml --ref develop`), follows
+the run, and then moves `main`. Everything else is the workflow:
 
 ```
 Release workflow (workflow_dispatch on develop)
@@ -78,9 +79,11 @@ Release workflow (workflow_dispatch on develop)
  release  the exact file set is checked, SHA256SUMS, a build-provenance attestation,
           a draft GitHub release, then publish (this creates the tag at the tested
           commit), then a final check that the tag and the assets are right
- main     main is fast-forwarded to the released commit
  publish  crates.io (Trusted Publishing, no stored token)
 ```
+
+Then `just release` waits for `develop`'s own Test & Build run on the commit and
+fast-forwards `main` to it.
 
 Nothing is published before every build job has succeeded, and the guard refuses
 anything that is not the tested, bumped commit of `develop`. Notes for the GitHub
@@ -91,15 +94,15 @@ no changelog is kept by hand.
 
 Fix the cause and use **Re-run failed jobs** on the run. Every step is safe to repeat:
 finished jobs are not run again, a draft release left by a failed run is replaced, an
-already published release is kept (and re-checked), `main` is a fast-forward that is a
-no-op when it already points at the commit, and a version crates.io already has is
-skipped.
+already published release is kept (and re-checked), and a version crates.io already has
+is skipped.
 
 - **Before the `release` job succeeds** nothing is published and no tag exists. Re-run,
   or fix the code, merge to `develop` and run `just release` again.
 - **After it** the tag and the release exist and are public. A transient failure of a
-  later step (`main`, crates.io) is fixed by re-running. A failure that needs a code
-  change is released as the next version: bump again and run `just release`.
+  later step (crates.io) is fixed by re-running. If `just release` stopped before moving
+  `main`, push it yourself: `git push origin <released-sha>:main`. A failure that needs a
+  code change is released as the next version: bump again and run `just release`.
 - **The guard refuses** when the version is already tagged (you forgot to bump), is
   below the latest release, when `develop` does not contain `main`, or when `CI OK` has
   not passed on the commit. The message says which.
@@ -144,9 +147,9 @@ gh attestation verify <file> --repo nbari/cron-when --signer-workflow nbari/cron
 One-time repository settings the flow relies on:
 
 - **`main`**: branch protection that requires the `CI OK` check, signed commits and
-  linear history, with no force pushes. The release fast-forwards it, so the workflow's
-  token must be allowed to push; if you restrict pushes to named users, see
-  [Lessons learned](#lessons-learned).
+  linear history, with no force pushes. `just release` fast-forwards it from the
+  operator's machine (see [Lessons learned](#lessons-learned)), so the operator must be
+  allowed to push to it.
 - A **tag ruleset** that lets `X.Y.Z` tags be created but never moved or deleted.
 - **crates.io Trusted Publishing** configured for the repository and the workflow file
   name `release.yml` (keep the file name stable; it is part of the identity).
@@ -189,10 +192,13 @@ These came from moving four projects off the scratch-branch flow:
 - **Tags created by the release are lightweight.** Any helper that insists on annotated or
   signed tags (a "highest release" check, for example) will ignore them. Compare plain
   version order instead.
-- **`main` may only allow named users to push.** The workflow's token then cannot
-  fast-forward it, and adding the Actions app to the allow-list did not help. Let
-  `just release` push `main` after the run succeeds, from the operator's machine, where
-  the push is allowed.
+- **A pending `CI OK` blocks every update of a protected `main`.** Fast-forwarding `main`
+  to a commit whose own Test & Build run (the one `develop`'s push starts) is still
+  running is refused with `Required status check "CI OK" is expected`, for the
+  workflow's token and for the operator alike, even though an earlier run already
+  passed on that commit. The release workflow therefore does not touch `main`: `just
+  release` pushes it after the run succeeded and `develop`'s own run has finished. Some
+  projects also restrict `main` to named pushers, which the workflow's token is not.
 - **Environments can restrict branches.** A Pages (or other) environment that allows only
   `main` and tags rejects a run on `develop`; add `develop` to its allowed branches.
 - **Image scanners are part of CI, not the release.** A fixable vulnerability in a base

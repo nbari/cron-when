@@ -548,8 +548,8 @@ cargo run -- "*/5 * * * *"
 A release is one command, and it never needs a tag deleted or moved. Work lands on
 `sandbox` with the version bump as its last commit; when CI is green there, fast-forward
 `develop` to that commit and run `just release`. The Release workflow builds that exact
-commit once, publishes the GitHub release (which creates the tag), fast-forwards `main`
-and publishes the crate; nothing is published before every build has succeeded.
+commit once, publishes the GitHub release (which creates the tag) and the crate;
+`just release` then fast-forwards `main`. Nothing is published before every build has succeeded.
 
 | Command | What it does |
 |---|---|

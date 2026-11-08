@@ -69,12 +69,24 @@ version:
 
 # Releases (see RELEASING.md): the operator bumps the version as the last commit of the
 # work, and the Release workflow builds and publishes that exact commit once CI passed.
+# `main` is moved here, after the run, because a protected branch refuses an update while
+# a `CI OK` check of the same commit is still pending (develop's own Test & Build).
 
-# Release develop: start the release workflow and follow it (the workflow checks the commit, the bump and CI)
+# Release develop: start the release workflow, follow it, then fast-forward main
 release:
+    #!/usr/bin/env bash
+    set -euo pipefail
     gh workflow run release.yml --ref develop
     sleep 5
-    gh run watch "$(gh run list --workflow release.yml --branch develop --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status
+    run="$(gh run list --workflow release.yml --branch develop --limit 1 --json databaseId --jq '.[0].databaseId')"
+    gh run watch "${run}" --exit-status
+    sha="$(gh run view "${run}" --json headSha --jq .headSha)"
+    ci="$(gh run list --workflow build.yml --branch develop --commit "${sha}" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+    if [[ -n "${ci}" ]]; then
+        echo "Waiting for develop's Test & Build (run ${ci}) before moving main..."
+        gh run watch "${ci}" > /dev/null
+    fi
+    git push origin "${sha}:refs/heads/main"
 
 # Check for security vulnerabilities
 audit:

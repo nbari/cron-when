@@ -2,10 +2,12 @@
 name: Release
 
 # Run manually on `develop` (`just release`). The commit is the one Test & Build already
-# passed on develop; nothing is bumped or committed here. The run builds that commit,
-# publishes the GitHub release (which creates the tag), fast-forwards `main` to it and
-# publishes the crate. A failed job is fixed by "Re-run failed jobs"; nothing has moved
-# before the release job succeeds.
+# passed on develop; nothing is bumped or committed here. The run builds that commit and
+# publishes the GitHub release (which creates the tag) and the crate. `main` is moved by
+# `just release` once this run has succeeded and develop's own Test & Build has finished
+# (a still-pending `CI OK` blocks protected-branch updates, even for the workflow's token).
+# A failed job is fixed by "Re-run failed jobs"; nothing is published before every build
+# job has succeeded.
 on:
   workflow_dispatch:
 
@@ -318,22 +320,6 @@ jobs:
             exit 1
           fi
           echo "Release ${VERSION} is on ${GITHUB_SHA} with $(wc -l <<<"${actual}") files."
-
-  main:
-    name: Fast-forward main
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: release
-    permissions:
-      contents: write
-    steps:
-      # force=false: the API refuses anything but a fast-forward.
-      - name: Move main to the released commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/main" \
-            -f sha="${GITHUB_SHA}" -F force=false
 
   publish:
     name: Publish to crates.io

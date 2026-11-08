@@ -191,7 +191,7 @@ Releases never start from a tag you push. The operator bumps the version as the 
 commit of the work, fast-forwards `develop` to it once Test & Build is green, and runs
 `just release`. The **release.yml** run builds that exact commit once (every archive, the
 Linux packages and the crate), publishes the GitHub release, which creates the `X.Y.Z`
-tag, fast-forwards `main` and publishes the crate; nothing is published before every
+tag, and the crate; `just release` then fast-forwards `main`. Nothing is published before every
 build has succeeded. The complete description, including recovery, is in
 [RELEASING.md](../RELEASING.md).
 
