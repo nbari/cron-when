@@ -262,7 +262,9 @@ current settings (read from the API); replace `OWNER/REPO`. They were applied un
 free plan rejects the branch-protection and ruleset calls (HTTP 403, "Upgrade to GitHub
 Pro or make this repository public"); the flow still runs there, but `main` and the tags
 are then protected by discipline, not by GitHub, and there are no build provenance
-attestations (drop that step from `release.yml`).
+attestations (drop that step from `release.yml`). The guard job asks for `checks: read`
+to look up `CI OK`; a public repository works without it, a private one answers
+`HTTP 403 Resource not accessible by integration`.
 
 - **`main`**: protected, requires the `CI OK` check, signed commits and linear history,
   no force pushes or deletions, applies to admins. `just release` fast-forwards it from
