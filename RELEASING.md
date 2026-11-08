@@ -96,8 +96,10 @@ sequenceDiagram
 
 The workflow never pushes `main` itself: a protected `main` refuses every update while a
 `CI OK` check of the commit is pending or failing, which is exactly the state of
-`develop`'s own run right after the push. The recipe waits for it and pushes from the
-operator's machine.
+`develop`'s own run right after the push. The recipe identifies the run it dispatched (the
+first new one for the `develop` commit, not just the latest), waits for `develop`'s
+Test & Build, stops with a message if that run is missing or failed, and only then pushes
+from the operator's machine.
 
 ## When something fails
 
