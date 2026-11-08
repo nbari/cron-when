@@ -197,6 +197,12 @@ See [Settings](#settings) for what and why, and for the commands.
 
 - [ ] Branches `sandbox`, `develop` and `main` exist; `develop` and `main` are
       protected as described below.
+- [ ] **`release.yml` is on `main`.** GitHub only dispatches a workflow whose file exists
+      on the default branch (`gh workflow run` answers `HTTP 404: workflow release.yml
+      not found on the default branch`). A repository that never had one must put the
+      workflow on `main` once, before its first `just release`, by fast-forwarding `main`
+      to the first green commit (`git push origin <sha>:refs/heads/main`), then run
+      `just release`. Later releases need nothing: `just release` keeps `main` current.
 - [ ] `CI OK` exists as a check on `sandbox` commits (open a pull request or push and
       look at the commit's checks).
 - [ ] Commits are signed and show **Verified** on GitHub.
@@ -251,8 +257,12 @@ them here if yours differ.
 ## Settings
 
 One-time repository settings the flow relies on. The commands mirror this repository's
-current settings (read from the API); replace `OWNER/REPO`. They have not been run
-against a fresh repository, so read the result in the repository's Settings page.
+current settings (read from the API); replace `OWNER/REPO`. They were applied unchanged to
+`pulse-live/pulse`, a public repository, and worked. A private repository on GitHub's
+free plan rejects the branch-protection and ruleset calls (HTTP 403, "Upgrade to GitHub
+Pro or make this repository public"); the flow still runs there, but `main` and the tags
+are then protected by discipline, not by GitHub, and there are no build provenance
+attestations (drop that step from `release.yml`).
 
 - **`main`**: protected, requires the `CI OK` check, signed commits and linear history,
   no force pushes or deletions, applies to admins. `just release` fast-forwards it from
