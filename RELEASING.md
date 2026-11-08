@@ -168,41 +168,143 @@ kept by hand.
 
 ## Adopting this flow in another project
 
-1. Copy `.github/workflows/release.yml`, `.github/actions/` and the `release` recipe of
-   the `.justfile`.
-2. Adjust the build matrix and keep the file-set check in `release.yml` in step with it
-   (a missing or extra file stops the release, the safe failure). Remove the `crate` and
-   `publish` jobs if you do not publish to crates.io.
+### 1. Copy and adapt
+
+1. Copy `.github/workflows/release.yml`, `.github/actions/` and the `release` recipe
+   ([below](#the-release-recipe)).
+2. Adjust the build matrix and keep the file-set check (step "Check the release files")
+   in step with it: a missing or extra file stops the release, the safe failure. Remove
+   the `crate` and `publish` jobs if you do not publish to crates.io.
 3. Make sure your CI workflow (`build.yml` here) has the aggregate **`CI OK`** job, since
    the guard looks for it on the commit. Put the packaging and `cargo publish --dry-run`
    checks in CI too, so a problem fails on `develop` before the release. Slow or flaky
    non-gating jobs (coverage) stay out of its `needs`.
-4. Apply the [settings](#settings) and delete any old release script and its recipes.
-5. Release a throwaway version first and read the run.
+4. Make the commits that CI tests the commits that are released: `develop` only ever
+   fast-forwards to a `sandbox` commit whose Test & Build passed.
+5. Delete any old release script and its recipes.
 
 Projects using this flow: this one, `zsmtp` (a crate with archives, packages and
 crates.io), `permesi` (archives, Debian packages, three images, Cloudflare Pages, Helm
 and docs) and `crono` (four-target binaries, packages, multi-platform images, Helm and
-Pages).
+Pages). Look at `permesi` or `crono` when you also publish images or an OpenAPI
+contract: the guard there checks the spec's version too.
+
+### 2. Apply the settings
+
+See [Settings](#settings) for what and why, and for the commands.
+
+### 3. First release checklist
+
+- [ ] Branches `sandbox`, `develop` and `main` exist; `develop` and `main` are
+      protected as described below.
+- [ ] `CI OK` exists as a check on `sandbox` commits (open a pull request or push and
+      look at the commit's checks).
+- [ ] Commits are signed and show **Verified** on GitHub.
+- [ ] crates.io (if used): the crate exists, and the trusted publisher is set for the
+      repository and `release.yml`.
+- [ ] Any environment a job uses allows the `develop` branch.
+- [ ] Bump the version as the last commit on `sandbox` (`Cargo.toml` and `Cargo.lock`),
+      wait for Test & Build, fast-forward `develop`, run `just release`.
+- [ ] Read the run: the guard resolved a Rust version, the release has exactly the
+      expected files, the tag points at the commit, the notes say "Built with Rust".
+- [ ] Make it fail once on purpose (a wrong file in the expected set) and use "Re-run
+      failed jobs", so recovery is something you have seen.
+
+### The release recipe
+
+Put this in the `.justfile` (it needs `bash`, `gh` logged in and `git`):
+
+```just
+# Release develop: start the release workflow, follow it, then fast-forward main
+release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git fetch --quiet origin develop
+    sha="$(git rev-parse origin/develop)"
+    last="$(gh run list --workflow release.yml --branch develop --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+    gh workflow run release.yml --ref develop
+    # The dispatched run is the first new one for this commit; never just "the latest".
+    run=""
+    for _ in $(seq 30); do
+        run="$(gh run list --workflow release.yml --branch develop --event workflow_dispatch --limit 10 --json databaseId,headSha --jq "[.[] | select(.databaseId > ${last} and .headSha == \"${sha}\")][0].databaseId // empty")"
+        [[ -z "${run}" ]] || break
+        sleep 2
+    done
+    [[ -n "${run}" ]] || { echo "The dispatched release run did not appear." >&2; exit 1; }
+    gh run watch "${run}" --exit-status
+    # develop's own Test & Build must have finished, and passed, before main can move.
+    ci=""
+    for _ in $(seq 30); do
+        ci="$(gh run list --workflow build.yml --branch develop --commit "${sha}" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+        [[ -z "${ci}" ]] || break
+        sleep 2
+    done
+    [[ -n "${ci}" ]] || { echo "No Test & Build run of develop for ${sha}; push it to main yourself when CI OK passed." >&2; exit 1; }
+    echo "Waiting for develop's Test & Build (run ${ci}) before moving main..."
+    gh run watch "${ci}" --exit-status > /dev/null || { echo "Test & Build failed on ${sha}; re-run its failed jobs, then: git push origin ${sha}:refs/heads/main" >&2; exit 1; }
+    git push origin "${sha}:refs/heads/main"
+```
+
+The workflow file names (`release.yml`, `build.yml`) are what the recipe looks up; rename
+them here if yours differ.
 
 ## Settings
 
-One-time repository settings the flow relies on:
+One-time repository settings the flow relies on. The commands mirror this repository's
+current settings (read from the API); replace `OWNER/REPO`. They have not been run
+against a fresh repository, so read the result in the repository's Settings page.
 
-- **`main`**: branch protection that requires the `CI OK` check, signed commits and
-  linear history, with no force pushes. `just release` fast-forwards it from the
-  operator's machine, so the operator must be allowed to push to it. Some projects
+- **`main`**: protected, requires the `CI OK` check, signed commits and linear history,
+  no force pushes or deletions, applies to admins. `just release` fast-forwards it from
+  the operator's machine, so the operator must be allowed to push to it. Some projects
   restrict `main` to named pushers, which the workflow's token is not.
-- A **tag ruleset** that lets `X.Y.Z` tags be created but never moved or deleted.
+
+  ```sh
+  gh api -X PUT repos/OWNER/REPO/branches/main/protection --input - <<'JSON'
+  {
+    "required_status_checks": { "strict": false, "contexts": ["CI OK"] },
+    "enforce_admins": true,
+    "required_pull_request_reviews": null,
+    "restrictions": null,
+    "required_linear_history": true,
+    "allow_force_pushes": false,
+    "allow_deletions": false
+  }
+  JSON
+  gh api -X POST repos/OWNER/REPO/branches/main/protection/required_signatures
+  ```
+
+- **A tag ruleset** that lets `X.Y.Z` tags be created but never moved or deleted (the
+  release creates the tag, so creation stays allowed):
+
+  ```sh
+  gh api -X POST repos/OWNER/REPO/rulesets --input - <<'JSON'
+  {
+    "name": "Release tags",
+    "target": "tag",
+    "enforcement": "active",
+    "conditions": { "ref_name": { "include": ["refs/tags/[0-9]*.[0-9]*.[0-9]*"], "exclude": [] } },
+    "rules": [ { "type": "update" }, { "type": "deletion" }, { "type": "non_fast_forward" } ],
+    "bypass_actors": []
+  }
+  JSON
+  ```
+
+- **Workflow permissions**: the repository default is read-only
+  (`gh api -X PUT repos/OWNER/REPO/actions/permissions/workflow -f default_workflow_permissions=read`);
+  each job asks for what it needs.
 - **crates.io Trusted Publishing** for the repository and the workflow file name
   `release.yml`. Keep that file name stable; it is part of the identity that signatures
-  and attestations carry.
+  and attestations carry. crates.io configures the publisher on an existing crate, so a
+  brand-new crate probably needs one first publish by hand before the workflow can take
+  over (check the crates.io documentation; this has not been tried here).
 - **Environments** used by a job (Pages, for example) must allow the `develop` branch,
   because the run is on `develop`.
 - **Commit signing**: commits on `sandbox` and `develop` must be signed with a key GitHub
   knows as a signing key, because `main` requires verified signatures. Use a dedicated,
-  registered signing key for unattended sessions; a forwarded agent disappears when the
-  session ends.
+  registered signing key for unattended sessions (`git config gpg.format ssh`,
+  `user.signingkey <public key file>`, `commit.gpgsign true`, and add the same public key
+  to GitHub as a **signing key**); a forwarded agent disappears when the session ends.
 
 Releasing needs `just`, `gh` (logged in) and a signing key.
 
