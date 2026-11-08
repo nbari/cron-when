@@ -128,14 +128,14 @@ jobs:
         run: cargo publish --dry-run --locked
 
   # One aggregate check for branch protection and the release flow: it passes only
-  # when every job above succeeded, so the required check never depends on job or
-  # matrix names.
+  # when every gating job succeeded, so the required check never depends on job or
+  # matrix names. Coverage is reported, not a gate: an upload to a coverage service
+  # failing must not block a release.
   ci-ok:
     name: CI OK
     if: always()
     needs:
       - test
-      - coverage
       - security
       - containers
       - build
