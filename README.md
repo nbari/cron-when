@@ -59,7 +59,7 @@ cd my-new-cli && rm -rf .git && git init
 
 # 3. What to keep vs replace:
 # ✅ KEEP: src/cli/ (entire architecture)
-# ✅ KEEP: .github/ and scripts/release, the release flow (adapt as RELEASING.md says)
+# ✅ KEEP: .github/, the release flow (adapt as RELEASING.md says)
 # ✅ KEEP: Strict clippy lints, deny.toml
 # 🔄 REPLACE: src/crontab.rs, src/output.rs (your domain logic)
 # 🔄 UPDATE: src/cli/actions/mod.rs (your action enum)
@@ -545,17 +545,15 @@ cargo run -- "*/5 * * * *"
 
 ### Releasing
 
-A release is one command, and it never needs a tag deleted or moved. `just deploy`
-bumps the version on a scratch branch, lets CI test and package that exact commit, and
-only then signs the tag and moves `develop` and `main` together; the tag's run
-publishes exactly the files the candidate run built and checked.
+A release is one command, and it never needs a tag deleted or moved. Work lands on
+`sandbox` with the version bump as its last commit; when CI is green there, fast-forward
+`develop` to that commit and run `just release`. The Release workflow builds that exact
+commit once, publishes the GitHub release (which creates the tag), fast-forwards `main`
+and publishes the crate; nothing is published before every build has succeeded.
 
 | Command | What it does |
 |---|---|
-| `just deploy` | Release a patch version (`deploy-minor`, `deploy-major` for the others) |
-| `just release-status` | Show where a release stands |
-| `just release-dry-run` | Build and package the current branch like a release, publishing nothing |
-| `just release-republish X.Y.Z` | Publish an existing release again if its own run could not |
+| `just release` | Start the Release workflow on `develop` and follow the run |
 
 [RELEASING.md](RELEASING.md) explains how it works, what to do when something fails,
 what it guarantees, how to verify a download, and how to adopt the flow in another

@@ -96,6 +96,37 @@ jobs:
         if: matrix.feature-set == 'telemetry'
         run: cargo build --release --locked --target ${{ matrix.target }} --features telemetry
 
+      # Packaging is checked here too, so a broken RPM/DEB definition fails CI on
+      # develop instead of the release.
+      - name: Package RPM and DEB
+        if: matrix.build == 'linux-default'
+        uses: ./.github/actions/linux-packages
+        with:
+          target: ${{ matrix.target }}
+          package: ${{ steps.package.outputs.name }}
+
+  # The same crate checks the release runs, so a package crates.io would refuse (missing
+  # metadata, unpublishable files) fails here on develop, not after the release tag exists.
+  crate:
+    name: Crate
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Package and verify the crate
+        run: cargo package --locked
+
+      - name: Check crates.io would accept it
+        run: cargo publish --dry-run --locked
+
   # One aggregate check for branch protection and the release flow: it passes only
   # when every job above succeeded, so the required check never depends on job or
   # matrix names.
@@ -108,6 +139,7 @@ jobs:
       - security
       - containers
       - build
+      - crate
     runs-on: ubuntu-latest
     steps:
       - name: Require every job to have succeeded

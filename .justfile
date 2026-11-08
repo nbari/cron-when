@@ -67,47 +67,14 @@ clean:
 version:
     @cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'
 
-# Releases (see RELEASING.md): the version bump is staged on the scratch `release`
-# branch, CI and a candidate run of release.yml test and package that exact commit, and
-# only then do develop, main and the signed tag move together; the tag's run publishes
-# exactly what the candidate built. Every deploy recipe is idempotent: rerunning it
-# resumes the staged candidate, or says there is nothing left to release.
+# Releases (see RELEASING.md): the operator bumps the version as the last commit of the
+# work, and the Release workflow builds and publishes that exact commit once CI passed.
 
-# Release a patch version: stage the bump, test and package it, then promote it
-deploy:
-    @scripts/release deploy patch
-
-# Release a minor version (X.Y+1.0)
-deploy-minor:
-    @scripts/release deploy minor
-
-# Release a major version (X+1.0.0)
-deploy-major:
-    @scripts/release deploy major
-
-# Release develop's version as is when it has no tag yet (no new bump)
-deploy-current:
-    @scripts/release deploy current
-
-# Publish an existing release tag again if its own run cannot (recovery run on main)
-release-republish version:
-    @scripts/release republish {{version}}
-
-# Show where a release stands: develop, main, sandbox, the staged candidate and its runs
-release-status:
-    @scripts/release status
-
-# Check everything a release needs; changes nothing that lasts
-release-preflight:
-    @scripts/release preflight
-
-# Apply branch protection (main requires "CI OK") and the rule that release tags never move
-protect-branches:
-    @scripts/release protect
-
-# Build and package the current branch like a release candidate; releases nothing, no tag
-release-dry-run:
-    @scripts/release dry-run
+# Release develop: start the release workflow and follow it (the workflow checks the commit, the bump and CI)
+release:
+    gh workflow run release.yml --ref develop
+    sleep 5
+    gh run watch "$(gh run list --workflow release.yml --branch develop --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status
 
 # Check for security vulnerabilities
 audit:

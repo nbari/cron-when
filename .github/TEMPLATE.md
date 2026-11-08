@@ -15,22 +15,22 @@ values to adapt by hand are listed below and, for the release flow, in
 - **workflows/coverage.yml** - Code coverage, uploaded to Codecov and Coveralls
 - **workflows/containers.yml** - Container integration test of the static binary
 - **workflows/security-audit.yml** - cargo-audit and cargo-deny, also daily
-- **workflows/release.yml** (Release) - The build-once release workflow: a candidate
-  run builds, packages and attests everything before any tag exists, and the tag's run
-  publishes exactly those files and the crate (see [RELEASING.md](../RELEASING.md))
-- **actions/release-is-latest** - Whether a tag is the highest promoted release, asked
-  right before anything that follows the newest release acts
+- **workflows/release.yml** (Release) - The single-run release workflow: a guard, the
+  builds, the GitHub release, `main` and crates.io (see [RELEASING.md](../RELEASING.md))
+- **actions/build-binary** - Installs Rust and the target's tools, builds the locked
+  release binary and runs it once to check its version
+- **actions/linux-packages** - Builds the `.deb` and `.rpm` and checks their version,
+  contents and architecture (used by both build.yml and release.yml)
+- **actions/crate-info** - Reads the package name and version from `Cargo.toml`
 - **actions/rust-toolchain** - Installs a Rust toolchain with rustup, so no
   third-party toolchain action runs
-- **actionlint.yaml** - Silences actionlint's unknown concurrency `queue` key only
 - **dependabot.yml** - Weekly updates for crates, the pinned actions, the container
   image and the Dev Container features, as pull requests into `sandbox` (never `main`,
   which only holds releases)
 - **SECURITY.md** - Vulnerability reporting and supported-version policy (replace its
   contact and response times with your own)
 
-Outside this directory, the release flow also needs `scripts/release` and the release
-recipes in `.justfile`.
+Outside this directory, the release flow only needs the `release` recipe in `.justfile`.
 
 ## How to Use as Template
 
@@ -39,7 +39,7 @@ recipes in `.justfile`.
 ```bash
 cp -r .github /path/to/new-project/
 cp -r .devcontainer /path/to/new-project/
-cp -r scripts /path/to/new-project/
+cp -r scripts /path/to/new-project/   # the integration-test helpers
 cp .justfile deny.toml RELEASING.md /path/to/new-project/
 cp .sops.yaml.example /path/to/new-project/
 ```
@@ -187,16 +187,13 @@ name = "your-package-name"  # ← This is used
 
 ### Releases
 
-Releases never start from a tag you push. `just deploy` stages the version bump on the
-scratch `release` branch, starts a candidate run of **release.yml** there (every test,
-build and package, kept as artifacts with a checksum manifest and provenance
-attestations, nothing published), and only when that run and Test & Build pass does it
-sign the `X.Y.Z` tag and move `develop` and `main`. The tag's run then publishes the
-candidate's files and the crate; it builds nothing.
-
-Any other tag, a `t-*` test tag for instance, only tests and builds. To try the whole
-pipeline on a branch without a tag, run `just release-dry-run`. The complete
-description, including recovery, is in [RELEASING.md](../RELEASING.md).
+Releases never start from a tag you push. The operator bumps the version as the last
+commit of the work, fast-forwards `develop` to it once Test & Build is green, and runs
+`just release`. The **release.yml** run builds that exact commit once (every archive, the
+Linux packages and the crate), publishes the GitHub release, which creates the `X.Y.Z`
+tag, fast-forwards `main` and publishes the crate; nothing is published before every
+build has succeeded. The complete description, including recovery, is in
+[RELEASING.md](../RELEASING.md).
 
 ## Security Auditing
 
@@ -371,14 +368,12 @@ you do not want coverage at all, remove the `coverage` job from `build.yml` and 
 
 ### A release does not publish
 
-Run `just release-status`: it shows the staged candidate and its runs, and the tag run
-of `develop`'s version once that version is tagged.
-The tag run's first job, the guard, explains any refusal in its log (an unsigned or
-unverified tag, a commit not on `main`, a version mismatch, no green Test & Build run,
-or no successful candidate run). A failed crates.io upload usually means Trusted
-Publishing is not configured for `release.yml` on the crate's settings page; fix it
-and re-run the failed job. [RELEASING.md](../RELEASING.md#when-something-fails) lists
-what to do for every failure.
+Open the run that `just release` started: the first job, the guard, explains any refusal
+in its log (the version already tagged or below the latest release, `develop` not
+containing `main`, or no successful `CI OK` check on the commit). A failed crates.io
+upload usually means Trusted Publishing is not configured for `release.yml` on the
+crate's settings page; fix it and re-run the failed job.
+[RELEASING.md](../RELEASING.md#when-something-fails) lists what to do for every failure.
 
 ## License
 
