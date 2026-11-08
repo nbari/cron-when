@@ -11,12 +11,13 @@ values to adapt by hand are listed below and, for the release flow, in
   tests, coverage, the security audit, the container integration test and the builds,
   ending with the aggregate **CI OK** check that branch protection requires
 - **workflows/test.yml** - Formatting, clippy, feature checks, the MSRV check and tests
-  on Linux, macOS and Windows (called by build.yml and release.yml)
+  on Linux, macOS and Windows (called by build.yml)
 - **workflows/coverage.yml** - Code coverage, uploaded to Codecov and Coveralls
 - **workflows/containers.yml** - Container integration test of the static binary
 - **workflows/security-audit.yml** - cargo-audit and cargo-deny, also daily
 - **workflows/release.yml** (Release) - The single-run release workflow: a guard, the
-  builds, the GitHub release, `main` and crates.io (see [RELEASING.md](../RELEASING.md))
+  builds, the GitHub release and crates.io (`just release` moves `main`; see
+  [RELEASING.md](../RELEASING.md))
 - **actions/build-binary** - Installs Rust and the target's tools, builds the locked
   release binary and runs it once to check its version
 - **actions/linux-packages** - Builds the `.deb` and `.rpm` and checks their version,
@@ -189,11 +190,11 @@ name = "your-package-name"  # ← This is used
 
 Releases never start from a tag you push. The operator bumps the version as the last
 commit of the work, fast-forwards `develop` to it once Test & Build is green, and runs
-`just release`. The **release.yml** run builds that exact commit once (every archive, the
-Linux packages and the crate), publishes the GitHub release, which creates the `X.Y.Z`
-tag, and the crate; `just release` then fast-forwards `main`. Nothing is published before every
-build has succeeded. The complete description, including recovery, is in
-[RELEASING.md](../RELEASING.md).
+`just release`. The **release.yml** run checks that `CI OK` passed on that commit, builds
+it once (every archive, the Linux packages and the crate), publishes the GitHub release,
+which creates the `X.Y.Z` tag, and then the crate; `just release` finally fast-forwards
+`main`. Nothing is published before every build has succeeded. The complete description,
+with diagrams and recovery, is in [RELEASING.md](../RELEASING.md).
 
 ## Security Auditing
 
@@ -243,18 +244,19 @@ Each release carries, for version `X.Y.Z`:
   `PACKAGE-X.Y.Z-aarch64-unknown-linux-musl.tar.gz` (static binaries)
 - `PACKAGE-X.Y.Z-1.x86_64.rpm`, `PACKAGE-X.Y.Z-1.aarch64.rpm`,
   `PACKAGE_X.Y.Z-1_amd64.deb` and `PACKAGE_X.Y.Z-1_arm64.deb`
-- `PACKAGE-X.Y.Z-x86_64-apple-darwin.tar.gz`
+- `PACKAGE-X.Y.Z-x86_64-apple-darwin.tar.gz` and
+  `PACKAGE-X.Y.Z-aarch64-apple-darwin.tar.gz`
 - `PACKAGE-X.Y.Z-x86_64-pc-windows-msvc.zip`
-- `SHA256SUMS` for all of them, plus build-provenance attestations for every file and
-  for the crate published to crates.io
+- `PACKAGE-X.Y.Z.crate`, the package published to crates.io
+- `SHA256SUMS` for all of them, plus build-provenance attestations for every file
 
 ## Customization
 
 ### Change Target Platforms
 
 Edit the matrix in `build.yml` and `release.yml`. In `release.yml`, also update the
-manifest job's `EXPECTED` inventory (each artifact and its number of files; the total is
-derived from it), or the candidate run refuses the new set of files:
+release job's `expected` file list (the step "Check the release files"), or the
+release refuses the new set of files:
 
 ```yaml
 strategy:
