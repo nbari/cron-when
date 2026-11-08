@@ -6,6 +6,10 @@ inputs:
   target:
     description: Rust target triple.
     required: true
+  toolchain:
+    description: stable, or an exact version such as 1.99.1 (a release passes its resolved one).
+    required: false
+    default: stable
 outputs:
   name:
     description: Package (binary) name.
@@ -21,6 +25,7 @@ runs:
 
     - uses: ./.github/actions/rust-toolchain
       with:
+        toolchain: ${{ inputs.toolchain }}
         targets: ${{ inputs.target }}
 
     - name: Install musl tools

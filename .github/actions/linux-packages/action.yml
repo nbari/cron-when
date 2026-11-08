@@ -17,14 +17,19 @@ runs:
   using: composite
   steps:
     # Compiling both tools dominates the job, so the installed binaries are cached; the
-    # key holds the pinned versions, so bumping a version below installs it afresh.
+    # key holds the pinned versions, so bumping a version below installs it afresh, and the
+    # compiler version, so a binary built by another compiler is never restored.
+    - id: rustc
+      shell: bash
+      run: echo "version=$(rustc --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
     - id: tools
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: |
           ~/.cargo/bin/cargo-generate-rpm
           ~/.cargo/bin/cargo-deb
-        key: linux-packages-${{ runner.os }}-${{ runner.arch }}-rpm-0.21.0-deb-3.8.0
+        key: linux-packages-${{ runner.os }}-${{ runner.arch }}-rustc-${{ steps.rustc.outputs.version }}-rpm-0.21.0-deb-3.8.0
 
     - if: steps.tools.outputs.cache-hit != 'true'
       shell: bash
