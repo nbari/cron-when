@@ -81,8 +81,8 @@ $ cron-when --version
 cron-when 0.5.19 - 9eb12c44f50c63b354362c0c9810ccac2da2153c
 ```
 
-Shows the version and the full hash of the release commit: the release's candidate run
-built these binaries from exactly the commit that was then tagged (see
+Shows the version and the full hash of the release commit: the release run built these
+binaries from exactly the commit that was then tagged (see
 [RELEASING.md](../RELEASING.md)).
 
 ## Why This Matters
@@ -98,11 +98,11 @@ built these binaries from exactly the commit that was then tagged (see
 - Ensure releases match source code
 
 ### For CI/CD
-- Release binaries report the commit their candidate run built them from
+- Release binaries report the commit their release run built them from
 - RPM/DEB packages can include build metadata
 - Binaries are not byte-for-byte reproducible (`built` records the build time), which
-  is why a release ships the candidate run's own bytes and proves them with
-  `SHA256SUMS` and build-provenance attestations instead of rebuilding
+  is why a release ships the bytes its own run built and proves them with
+  `SHA256SUMS` and build-provenance attestations
 
 ## Template Usage
 
