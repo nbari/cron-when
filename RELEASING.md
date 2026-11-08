@@ -157,7 +157,8 @@ Release workflow (workflow_dispatch on develop)
  crate    cargo package and a publish dry run; the .crate is a release file
  release  the exact file set is checked, SHA256SUMS, a build-provenance attestation,
           a draft GitHub release, then publish (this creates the tag at the tested
-          commit), then a check that the tag and the asset names are right
+          commit), then a check that the tag is right and the published files, downloaded
+          again, equal the built ones
  publish  crates.io (Trusted Publishing, no stored token)
 ```
 
@@ -221,9 +222,10 @@ wrote is executed.
 ## Guarantees, security and limits
 
 - The released commit is the one `CI OK` succeeded on. The release job also checks that
-  the tag points at it and that the published assets are exactly the expected names. The
-  workflow's own builds are the only source of the files; `crates.io` receives the crate
-  from the same checkout.
+  the tag points at it and that the published assets, downloaded again, are byte for byte
+  the files that were built. The workflow's own builds are the only source of the files;
+  crates.io receives a crate packaged from the same checkout (the `.crate` in the release
+  is the one that was verified), not the uploaded file.
 - A version above the latest release is required, so a lower or repeated version cannot
   take the Latest flag.
 - The workflow is read-only by default; each job asks for the permissions it needs, and
