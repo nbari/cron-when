@@ -86,8 +86,8 @@ impl std::error::Error for UsageHint {}
 const BASE_HINT: &str = "Please provide a cron expression, use --file or use --crontab";
 const HELP_HINT: &str = "Run with --help for usage information.";
 const ETC_CRONTAB_PATH: &str = "/etc/crontab";
-const FILE_LABEL: &str = "(--file)";
-const CRONTAB_LABEL: &str = "(--crontab)";
+const FILE_LABEL: &str = "--file";
+const CRONTAB_LABEL: &str = "--crontab";
 
 /// Compose the usage hint message shown when no action is requested
 fn build_usage_hint(
@@ -235,8 +235,8 @@ mod tests {
             hint,
             "Please provide a cron expression, use --file or use --crontab\n\
 \n\
-(--file): In /etc/crontab you have 3 entries\n\
-(--crontab): In your current crontab you have 1 entry\n\
+--file: In /etc/crontab you have 3 entries\n\
+--crontab: In your current crontab you have 1 entry\n\
 \n\
 Run with --help for usage information."
         );
@@ -253,8 +253,8 @@ Run with --help for usage information."
         );
 
         let empty_etc = build_usage_hint(Some(0), None, false);
-        assert!(empty_etc.contains("(--file): In /etc/crontab you have 0 entries"));
-        assert!(!empty_etc.contains("(--crontab)"));
+        assert!(empty_etc.contains("--file: In /etc/crontab you have 0 entries"));
+        assert!(!empty_etc.contains("In your current crontab"));
     }
 
     #[test]
