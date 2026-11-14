@@ -4,8 +4,19 @@ use tracing::info;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    // Build the action from CLI arguments
-    let action = cli::start()?;
+    // Build the action from CLI arguments. When no action is given, a
+    // friendly usage hint was already composed: print it and exit without
+    // the default `Error: ...` report
+    let action = match cli::start() {
+        Ok(action) => action,
+        Err(error) => {
+            if let Some(hint) = error.downcast_ref::<cli::dispatch::UsageHint>() {
+                eprintln!("{hint}");
+                std::process::exit(2);
+            }
+            return Err(error);
+        }
+    };
 
     info!("Starting cron-when execution");
 

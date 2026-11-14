@@ -1,9 +1,12 @@
 use crate::cli::actions::Action;
+use crate::crontab;
 use anyhow::Result;
 use clap::ArgMatches;
+use colored::Colorize;
 use std::env;
+use std::fmt;
 use std::io::{IsTerminal, stdout};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Convert `ArgMatches` into an Action
 ///
@@ -52,11 +55,98 @@ pub fn handler(matches: &ArgMatches) -> Result<Action> {
             color,
         })
     } else {
-        anyhow::bail!(
-            "Please provide a cron expression, use --file, or use --crontab\n\
-             Run with --help for usage information"
-        )
+        Err(UsageHint::new(etc_crontab_entries(), user_crontab_entries(), color).into())
     }
+}
+
+/// Error returned when the CLI is invoked without an action; carries a
+/// pre-rendered, color-aware usage hint for the user
+#[derive(Debug)]
+pub struct UsageHint {
+    rendered: String,
+}
+
+impl UsageHint {
+    /// Build a hint from best-effort entry counts of the system and user crontabs
+    fn new(etc_entries: Option<usize>, user_entries: Option<usize>, color: bool) -> Self {
+        Self {
+            rendered: build_usage_hint(etc_entries, user_entries, color),
+        }
+    }
+}
+
+impl fmt::Display for UsageHint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.rendered)
+    }
+}
+
+impl std::error::Error for UsageHint {}
+
+const BASE_HINT: &str = "Please provide a cron expression, use --file or use --crontab";
+const HELP_HINT: &str = "Run with --help for usage information";
+const ETC_CRONTAB_PATH: &str = "/etc/crontab";
+
+/// Compose the usage hint message shown when no action is requested
+fn build_usage_hint(
+    etc_entries: Option<usize>,
+    user_entries: Option<usize>,
+    color: bool,
+) -> String {
+    if color {
+        colored::control::set_override(true);
+    }
+
+    let base = if color {
+        BASE_HINT.yellow().bold().to_string()
+    } else {
+        BASE_HINT.to_string()
+    };
+
+    let mut lines = vec![base];
+
+    if let Some(count) = etc_entries {
+        lines.push(format!(
+            "In {ETC_CRONTAB_PATH} you have {}",
+            entry_count_label(count)
+        ));
+    }
+
+    if let Some(count) = user_entries {
+        lines.push(format!(
+            "In your current crontab you have {}",
+            entry_count_label(count)
+        ));
+    }
+
+    if color {
+        lines.push(HELP_HINT.bright_black().to_string());
+    } else {
+        lines.push(HELP_HINT.to_string());
+    }
+
+    lines.join("\n")
+}
+
+/// Render an entry count with correct pluralization
+fn entry_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 entry".to_string()
+    } else {
+        format!("{count} entries")
+    }
+}
+
+/// Count entries in the system crontab, `None` when it is not readable
+fn etc_crontab_entries() -> Option<usize> {
+    crontab::parse_file(Path::new(ETC_CRONTAB_PATH))
+        .ok()
+        .map(|entries| entries.len())
+}
+
+/// Count entries in the current user's crontab, `None` when it cannot be listed
+fn user_crontab_entries() -> Option<usize> {
+    crontab::parse_current().ok().map(|entries| entries.len())
 }
 
 #[cfg(test)]
@@ -118,6 +208,51 @@ mod tests {
         let matches = commands::new().get_matches_from(vec!["cron-when"]);
         let result = handler(&matches);
         assert!(result.is_err());
+        if let Err(error) = result {
+            let hint = error.downcast_ref::<UsageHint>();
+            assert!(hint.is_some());
+            if let Some(hint) = hint {
+                let message = hint.to_string();
+                assert!(message.contains(BASE_HINT));
+                assert!(message.contains(HELP_HINT));
+            }
+        }
+    }
+
+    #[test]
+    fn test_build_usage_hint_with_counts() {
+        let hint = build_usage_hint(Some(3), Some(1), false);
+        assert_eq!(
+            hint,
+            "Please provide a cron expression, use --file or use --crontab\n\
+             In /etc/crontab you have 3 entries\n\
+             In your current crontab you have 1 entry\n\
+             Run with --help for usage information"
+        );
+    }
+
+    #[test]
+    fn test_build_usage_hint_omits_unavailable_counts() {
+        let hint = build_usage_hint(None, None, false);
+        assert_eq!(
+            hint,
+            "Please provide a cron expression, use --file or use --crontab\n\
+             Run with --help for usage information"
+        );
+
+        let empty_etc = build_usage_hint(Some(0), None, false);
+        assert!(empty_etc.contains("In /etc/crontab you have 0 entries"));
+        assert!(!empty_etc.contains("current crontab"));
+    }
+
+    #[test]
+    fn test_build_usage_hint_color() {
+        let styled = build_usage_hint(None, None, true);
+        assert!(styled.contains("\u{1b}["));
+        colored::control::unset_override();
+
+        let plain = build_usage_hint(None, None, false);
+        assert!(!plain.contains("\u{1b}["));
     }
 
     #[test]
