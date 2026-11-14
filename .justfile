@@ -67,8 +67,120 @@ clean:
 version:
     @cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'
 
-# Releases (see RELEASING.md): the operator bumps the version as the last commit of the
-# work, and the Release workflow builds and publishes that exact commit once CI passed.
+# Guard: refuse a dirty working tree (the bump commits only its own version files)
+check-clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -n $(git status --short) ]]; then
+        echo "❌ Working directory is not clean. Commit or stash your changes first."
+        git status --short
+        exit 1
+    fi
+    echo "✅ Working directory is clean"
+
+# Guard: refuse while cargo watch runs (a watcher races builds and target cleanup)
+check-no-watch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if pgrep -f '[c]argo watch|[c]argo-watch' >/dev/null; then
+        echo "❌ cargo watch is running. Stop 'just watch' before bumping."
+        exit 1
+    fi
+    echo "✅ No cargo watcher is running"
+
+# Guard: refuse the fast-forward-only branches main and develop (bump from a working branch)
+check-branch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    current_branch="$(git branch --show-current)"
+    if [[ "$current_branch" == "main" || "$current_branch" == "develop" ]]; then
+        echo "❌ Branch '$current_branch' is fast-forward-only; bump from a working branch."
+        exit 1
+    fi
+    echo "✅ Branch '$current_branch' is a working branch"
+
+# Private: bump the version, refresh dependencies, run tests, and commit (no push)
+_bump bump_kind: check-clean check-no-watch check-branch
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    bump_kind="{{bump_kind}}"
+
+    cleanup() {
+        status=$?
+        if [ $status -ne 0 ]; then
+            echo "↩️  Restoring version files after failure..."
+            if ! git restore --staged --worktree --source=HEAD -- Cargo.toml Cargo.lock; then
+                echo "⚠️ Failed to restore Cargo.toml Cargo.lock from HEAD; fix them manually."
+            fi
+        fi
+        exit $status
+    }
+    trap cleanup EXIT
+
+    previous_version=$(just version)
+    echo "ℹ️  Current version: ${previous_version}"
+
+    echo "🔧 Bumping ${bump_kind} version..."
+    cargo set-version --bump "${bump_kind}"
+
+    new_version=$(just version)
+    echo "📝 New version: ${new_version}"
+
+    validate_bump() {
+        local previous=$1 bump=$2 current=$3
+        IFS=. read -r prev_major prev_minor prev_patch <<<"${previous}"
+        IFS=. read -r new_major new_minor new_patch <<<"${current}"
+
+        case "${bump}" in
+            patch)
+                (( new_major == prev_major && new_minor == prev_minor && new_patch == prev_patch + 1 )) || { echo "❌ Expected patch bump from ${previous}, got ${current}"; exit 1; }
+                ;;
+            minor)
+                (( new_major == prev_major && new_minor == prev_minor + 1 && new_patch == 0 )) || { echo "❌ Expected minor bump from ${previous}, got ${current}"; exit 1; }
+                ;;
+            major)
+                (( new_major == prev_major + 1 && new_minor == 0 && new_patch == 0 )) || { echo "❌ Expected major bump from ${previous}, got ${current}"; exit 1; }
+                ;;
+        esac
+    }
+
+    validate_bump "${previous_version}" "${bump_kind}" "${new_version}"
+
+    echo "🔍 Verifying tag does not exist for ${new_version}..."
+    git fetch --tags --quiet
+    if git rev-parse -q --verify "refs/tags/${new_version}" >/dev/null 2>&1; then
+        echo "❌ Tag ${new_version} already exists!"
+        exit 1
+    fi
+
+    echo "🔄 Updating dependencies..."
+    cargo update
+
+    echo "🧪 Running tests with new version (via just test)..."
+    just test
+
+    git add Cargo.toml Cargo.lock
+    git commit -m "bump version to ${new_version}"
+
+    echo "✅ Version bumped to ${new_version} (commit $(git rev-parse --short HEAD))."
+    echo "Next steps: fast-forward develop to this SHA when Test & Build is green, then run 'just release'."
+
+# Bump version and commit (patch level)
+bump:
+  @just _bump patch
+
+# Bump minor version
+bump-minor:
+  @just _bump minor
+
+# Bump major version
+bump-major:
+  @just _bump major
+
+# Releases (see RELEASING.md): the version bump is done with `just bump` (or
+# `bump-minor`/`bump-major`) as the last commit of the work, and the Release workflow
+# builds and publishes that exact commit once CI passed.
 # `main` is moved here, after the run, because a protected branch refuses an update while
 # a `CI OK` check of the same commit is still pending (develop's own Test & Build).
 

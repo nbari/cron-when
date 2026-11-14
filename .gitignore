@@ -21,3 +21,4 @@ flycheck*.rs
 .idea/
 .vscode/
 .codex
+.omo/

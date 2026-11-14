@@ -42,8 +42,8 @@ are in [`.github/TEMPLATE.md`](.github/TEMPLATE.md).
 
 Work, including dependency updates, lands on `sandbox`.
 
-1. As the last commit of the work, the operator bumps the version with a tool of their
-   choice (`cargo set-version --bump patch`, `gbump`). The bump covers `Cargo.toml` and
+1. As the last commit of the work, the operator bumps the version with `just bump`
+   (patch), `just bump-minor` or `just bump-major`. The bump covers `Cargo.toml` and
    `Cargo.lock`. The reviewer checks that it is present and right. Commits must be
    signed.
 2. When **Test & Build** is green on `sandbox`, fast-forward `develop` to that same
@@ -171,7 +171,8 @@ kept by hand.
 ### 1. Copy and adapt
 
 1. Copy `.github/workflows/release.yml`, `.github/actions/` and the `release` recipe
-   ([below](#the-release-recipe)).
+   ([below](#the-release-recipe)), along with the `bump`, `bump-minor` and `bump-major`
+   recipes that make the version-bump commit.
 2. Adjust the build matrix and keep the file-set check (step "Check the release files")
    in step with it: a missing or extra file stops the release, the safe failure. Remove
    the `crate` and `publish` jobs if you do not publish to crates.io.
@@ -209,7 +210,8 @@ See [Settings](#settings) for what and why, and for the commands.
 - [ ] crates.io (if used): the crate exists, and the trusted publisher is set for the
       repository and `release.yml`.
 - [ ] Any environment a job uses allows the `develop` branch.
-- [ ] Bump the version as the last commit on `sandbox` (`Cargo.toml` and `Cargo.lock`),
+- [ ] Bump the version as the last commit on `sandbox` with `just bump` (or
+      `just bump-minor` / `just bump-major`; `Cargo.toml` and `Cargo.lock`),
       wait for Test & Build, fast-forward `develop`, run `just release`.
 - [ ] Read the run: the guard resolved a Rust version, the release has exactly the
       expected files, the tag points at the commit, the notes say "Built with Rust".
