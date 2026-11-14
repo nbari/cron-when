@@ -84,8 +84,10 @@ impl fmt::Display for UsageHint {
 impl std::error::Error for UsageHint {}
 
 const BASE_HINT: &str = "Please provide a cron expression, use --file or use --crontab";
-const HELP_HINT: &str = "Run with --help for usage information";
+const HELP_HINT: &str = "Run with --help for usage information.";
 const ETC_CRONTAB_PATH: &str = "/etc/crontab";
+const FILE_LABEL: &str = "(--file)";
+const CRONTAB_LABEL: &str = "(--crontab)";
 
 /// Compose the usage hint message shown when no action is requested
 fn build_usage_hint(
@@ -97,35 +99,42 @@ fn build_usage_hint(
         colored::control::set_override(true);
     }
 
-    let base = if color {
-        BASE_HINT.yellow().bold().to_string()
-    } else {
-        BASE_HINT.to_string()
-    };
+    let mut lines = vec![BASE_HINT.to_string()];
 
-    let mut lines = vec![base];
-
+    let mut context = Vec::new();
     if let Some(count) = etc_entries {
-        lines.push(format!(
-            "In {ETC_CRONTAB_PATH} you have {}",
+        context.push(format!(
+            "{}: In {ETC_CRONTAB_PATH} you have {}",
+            styled_label(FILE_LABEL, color),
             entry_count_label(count)
         ));
     }
-
     if let Some(count) = user_entries {
-        lines.push(format!(
-            "In your current crontab you have {}",
+        context.push(format!(
+            "{}: In your current crontab you have {}",
+            styled_label(CRONTAB_LABEL, color),
             entry_count_label(count)
         ));
     }
 
-    if color {
-        lines.push(HELP_HINT.bright_black().to_string());
-    } else {
-        lines.push(HELP_HINT.to_string());
+    if !context.is_empty() {
+        lines.push(String::new());
+        lines.extend(context);
     }
+
+    lines.push(String::new());
+    lines.push(HELP_HINT.to_string());
 
     lines.join("\n")
+}
+
+/// Style an option label, the only colored part of the usage hint
+fn styled_label(label: &str, color: bool) -> String {
+    if color {
+        label.green().bold().to_string()
+    } else {
+        label.to_string()
+    }
 }
 
 /// Render an entry count with correct pluralization
@@ -225,9 +234,11 @@ mod tests {
         assert_eq!(
             hint,
             "Please provide a cron expression, use --file or use --crontab\n\
-             In /etc/crontab you have 3 entries\n\
-             In your current crontab you have 1 entry\n\
-             Run with --help for usage information"
+\n\
+(--file): In /etc/crontab you have 3 entries\n\
+(--crontab): In your current crontab you have 1 entry\n\
+\n\
+Run with --help for usage information."
         );
     }
 
@@ -237,21 +248,28 @@ mod tests {
         assert_eq!(
             hint,
             "Please provide a cron expression, use --file or use --crontab\n\
-             Run with --help for usage information"
+\n\
+Run with --help for usage information."
         );
 
         let empty_etc = build_usage_hint(Some(0), None, false);
-        assert!(empty_etc.contains("In /etc/crontab you have 0 entries"));
-        assert!(!empty_etc.contains("current crontab"));
+        assert!(empty_etc.contains("(--file): In /etc/crontab you have 0 entries"));
+        assert!(!empty_etc.contains("(--crontab)"));
     }
 
     #[test]
-    fn test_build_usage_hint_color() {
-        let styled = build_usage_hint(None, None, true);
+    fn test_build_usage_hint_color_only_on_labels() {
+        let styled = build_usage_hint(Some(2), Some(2), true);
         assert!(styled.contains("\u{1b}["));
+
+        let mut lines = styled.lines();
+        let first_line = lines.next().map_or("", |line| line);
+        assert_eq!(first_line, BASE_HINT);
+        let last_line = lines.next_back().map_or("", |line| line);
+        assert_eq!(last_line, HELP_HINT);
         colored::control::unset_override();
 
-        let plain = build_usage_hint(None, None, false);
+        let plain = build_usage_hint(Some(2), Some(2), false);
         assert!(!plain.contains("\u{1b}["));
     }
 
