@@ -1,10 +1,10 @@
-use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use cron_parser::parse;
+use jiff::{Timestamp, tz::TimeZone};
 use std::hint::black_box;
 
 fn benchmark_cron_parsing(c: &mut Criterion) {
-    let now = Utc::now();
+    let now = Timestamp::now().to_zoned_datetime(TimeZone::UTC);
 
     c.bench_function("parse every 5 minutes", |b| {
         b.iter(|| parse(black_box("*/5 * * * *"), &now));

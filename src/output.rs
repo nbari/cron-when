@@ -1,9 +1,9 @@
 use crate::crontab::{CronEntry, ScheduleExpression, normalized_schedule_expression};
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local, Utc};
 use colored::Colorize;
 use compound_duration::format_dhms;
 use cron_parser::parse;
+use jiff::{Timestamp, ZonedDateTime, tz::TimeZone};
 use std::io::Write;
 use tracing::{debug, info, instrument};
 
@@ -55,7 +55,7 @@ pub fn display_single_with_writer(
         return display_reboot(writer, expression, comment, command, color);
     }
 
-    let now = Utc::now();
+    let now = utc_now();
     let formatted_now = format_datetime(&now);
     debug!("Current time: {formatted_now}");
 
@@ -68,8 +68,7 @@ pub fn display_single_with_writer(
         .with_context(|| format!("Failed to parse cron expression: '{expression}'"))?;
 
     // Calculate duration until next execution
-    let duration = next.signed_duration_since(now);
-    let seconds = u64::try_from(duration.num_seconds().max(0)).unwrap_or(0);
+    let seconds = seconds_until(&next, &now);
 
     info!(
         next_execution = %format_datetime(&next),
@@ -261,7 +260,7 @@ pub fn display_iterations_with_writer(
         unreachable!("reboot expressions return early");
     };
 
-    let mut current = Utc::now();
+    let mut current = utc_now();
 
     info!("Calculating {count} iterations");
 
@@ -272,8 +271,7 @@ pub fn display_iterations_with_writer(
         let next = parse(schedule_expression, &current)
             .with_context(|| format!("Failed to parse cron expression: '{expression}'"))?;
 
-        let duration = next.signed_duration_since(Utc::now());
-        let seconds = u64::try_from(duration.num_seconds().max(0)).unwrap_or(0);
+        let seconds = seconds_until(&next, &utc_now());
 
         debug!(iteration = i, next_time = %format_datetime(&next), "Calculated iteration");
 
@@ -294,14 +292,26 @@ pub fn display_iterations_with_writer(
     Ok(())
 }
 
-/// Format a `DateTime` as a human-readable string with both UTC and local timezone
-fn format_datetime(dt: &DateTime<Utc>) -> String {
-    let local = dt.with_timezone(&Local);
+/// The current time, in UTC
+fn utc_now() -> ZonedDateTime {
+    Timestamp::now().to_zoned_datetime(TimeZone::UTC)
+}
+
+/// Whole seconds from `now` until `next`, or zero if `next` has passed
+fn seconds_until(next: &ZonedDateTime, now: &ZonedDateTime) -> u64 {
+    u64::try_from(next.duration_since(now).as_secs().max(0)).unwrap_or(0)
+}
+
+/// Format a datetime as a human-readable string with both UTC and the system's
+/// local time and UTC offset
+fn format_datetime(dt: &ZonedDateTime) -> String {
+    let utc = dt.with_time_zone(TimeZone::UTC);
+    let local = dt.with_time_zone(TimeZone::system());
     format!(
         "{} ({} {})",
-        dt.format("%Y-%m-%d %H:%M:%S UTC"),
-        local.format("%H:%M:%S"),
-        local.format("%Z")
+        utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        local.strftime("%H:%M:%S"),
+        local.strftime("%:z")
     )
 }
 
@@ -311,10 +321,10 @@ mod tests {
 
     #[test]
     fn test_format_datetime() {
-        let Ok(dt) = DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z") else {
+        let Ok(timestamp) = "2024-01-15T10:30:00Z".parse::<Timestamp>() else {
             return;
         };
-        let dt = dt.with_timezone(&Utc);
+        let dt = timestamp.to_zoned_datetime(TimeZone::UTC);
         let formatted = format_datetime(&dt);
 
         // Check that it contains UTC time in the correct format
@@ -343,10 +353,10 @@ mod tests {
 
     #[test]
     fn test_format_datetime_includes_timezone() {
-        let Ok(dt) = DateTime::parse_from_rfc3339("2024-06-15T14:30:00Z") else {
+        let Ok(timestamp) = "2024-06-15T14:30:00Z".parse::<Timestamp>() else {
             return;
         };
-        let dt = dt.with_timezone(&Utc);
+        let dt = timestamp.to_zoned_datetime(TimeZone::UTC);
         let formatted = format_datetime(&dt);
 
         // Should have the pattern: YYYY-MM-DD HH:MM:SS UTC (HH:MM:SS TZ)

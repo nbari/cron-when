@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
 use cron_parser::parse;
+use jiff::{Timestamp, tz::TimeZone};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -75,7 +75,7 @@ fn parse_content(content: &str) -> Vec<CronEntry> {
     let mut entries = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
     let mut current_comments = Vec::new();
-    let now = Utc::now();
+    let now = Timestamp::now().to_zoned_datetime(TimeZone::UTC);
 
     debug!(line_count = lines.len(), "Parsing crontab content");
 
