@@ -8,8 +8,20 @@ writes them from the commit subjects since the previous release, so they need no
 editing and always match what shipped (see [RELEASING.md](RELEASING.md)). The changes in
 0.5.1 to 0.5.19 are in the commit history
 ([0.5.0...0.5.19](https://github.com/nbari/cron-when/compare/0.5.0...0.5.19)). This file
-keeps the history up to 0.5.0, in the
+keeps the history up to 0.5.0, and 0.6.0 because it replaced the date library, in the
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format.
+
+## [0.6.0] - 2026-11-25
+
+### Changed
+- Dates and time zones now come from [jiff](https://crates.io/crates/jiff) instead of chrono, which is unmaintained (RUSTSEC-2026-0543), through cron-parser 0.13. The output is unchanged: execution times, the local time, and its UTC offset print exactly as before.
+
+### Added
+- `AI_POLICY.md`, the project policy on AI-assisted contributions.
+
+### Dependencies
+- Removed `chrono`; added `jiff` 1.
+- `cron-parser` 0.12 to 0.13, `built` 0.8 to 0.9, and refreshed locked dependencies.
 
 ## [0.5.0] - 2026-03-31
 
