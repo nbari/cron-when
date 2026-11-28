@@ -16,7 +16,7 @@ sandbox: "Prepare the candidate on sandbox\nCheck, bump, update dependencies, an
 develop: "Qualify the same SHA on develop\nFast-forward develop and wait for CI OK" {
   class: checkpoint
 }
-release: "Publish with just release\nBuild and verify the draft\nPublish the release, creating the tag at that SHA\nPublish or verify the crate" {
+release: "Publish with just release\nBuild and verify the draft\nPublish the release, creating the tag at that SHA\nPublish or verify the crate and image" {
   class: step
 }
 main: "Promote the released SHA to main\nRecheck develop CI and fast-forward main" {

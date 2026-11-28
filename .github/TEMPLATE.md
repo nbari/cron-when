@@ -8,7 +8,7 @@ values to adapt by hand are listed below and, for the release flow, in
 ## Files
 
 - **workflows/build.yml** (Test & Build) - Runs on every branch push and pull request:
-  tests, coverage, the security audit, the container integration test and the builds,
+  tests, coverage, the security audit, container tests and builds,
   ending with the aggregate **CI OK** check that branch protection requires
 - **workflows/test.yml** - Formatting, clippy, feature checks, the MSRV check and tests
   on Linux, macOS and Windows (called by build.yml)
@@ -16,8 +16,10 @@ values to adapt by hand are listed below and, for the release flow, in
 - **workflows/containers.yml** - Container integration test of the static binary
 - **workflows/security-audit.yml** - cargo-audit and cargo-deny, also daily
 - **workflows/release.yml** (Release) - The single-run release workflow: a guard, the
-  builds, the GitHub release and crates.io (`just release` moves `main`; see
+  builds, the GitHub release, crates.io and GHCR (`just release` moves `main`; see
   [RELEASING.md](../RELEASING.md))
+- **container/** - Scratch image, native image smoke test, and release index
+  assembly from static Linux release archives
 - **actions/build-binary** - Installs Rust and the target's tools, builds the locked
   release binary and runs it once to check its version
 - **actions/linux-packages** - Builds the `.deb` and `.rpm` and checks their version,
@@ -249,6 +251,15 @@ Each release carries, for version `X.Y.Z`:
 - `PACKAGE-X.Y.Z-x86_64-pc-windows-msvc.zip`
 - `PACKAGE-X.Y.Z.crate`, the package published to crates.io
 - `SHA256SUMS` for all of them, plus build-provenance attestations for every file
+
+The `image` job also publishes `ghcr.io/owner/repo:X.Y.Z` with an attested
+OCI index for Linux amd64 and arm64. The repository path comes from GitHub.
+When copying this to another project, adapt the binary name and smoke test
+under [`container/`](container), the image step in
+[`build.yml`](workflows/build.yml), and `just image`. Keep the Linux archive
+names, targets, and image platforms aligned. Use Scratch for statically linked
+binaries that need no runtime files. Review the image base if your CLI uses
+external commands, system certificates, or time-zone files.
 
 ## Customization
 

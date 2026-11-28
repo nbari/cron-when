@@ -19,7 +19,7 @@ workflow -> recipe: Return run ID {
 recipe -> workflow: Follow the returned run ID
 workflow -> workflow: Guard, build, and verify draft
 workflow -> workflow: Publish release and tag
-workflow -> workflow: Verify assets and finish crates.io
+workflow -> workflow: Verify assets and publish or verify crate and image
 workflow -> recipe: Release succeeded {
   style.stroke-dash: 5
 }

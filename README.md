@@ -125,6 +125,62 @@ rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
 ```
 
+### Container image
+
+Releases that include the container build publish
+`ghcr.io/nbari/cron-when:X.Y.Z` for Linux amd64 and arm64 under one version
+tag. The image contains a single static binary, runs as UID and GID 65532,
+and uses UTC. Replace `X.Y.Z` with a release that includes the image.
+
+```bash
+podman run --rm ghcr.io/nbari/cron-when:X.Y.Z --next 3 '*/5 * * * *'
+```
+
+On a Linux amd64 or arm64 development host, `just image` builds and tests
+`cron-when:local`. Install the host's Rust musl target first
+(`x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl`). Set
+`CONTAINER_ENGINE=docker` to use Docker.
+
+#### Kubernetes Job
+
+Save this as `cron-when-job.yaml` and replace the image tag. Kubernetes
+selects the version of the image for the scheduled node's architecture.
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cron-when-example
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cron-when
+          image: ghcr.io/nbari/cron-when:X.Y.Z
+          args: ["--next", "3", "*/5 * * * *"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+```
+
+```bash
+kubectl apply -f cron-when-job.yaml
+kubectl wait --for=condition=complete --timeout=60s job/cron-when-example
+kubectl logs job/cron-when-example
+```
+
+For a crontab, mount a ConfigMap as a file and pass `--file` with the
+mounted path. The `--crontab` option requires a host or image with the
+`crontab` executable installed.
+
 ## Usage
 
 ### Basic usage with cron expression
@@ -282,6 +338,16 @@ Options:
   -h, --help          Print help
   -V, --version       Print version
 ```
+
+`cron-when -V` prints the package version. `cron-when --version` also
+includes the short commit hash and commit date when built from a Git checkout.
+
+```text
+cron-when 0.6.1 (8ba707eac 2026-11-28)
+```
+
+Crates.io builds include the commit hash recorded by Cargo. A build from
+sources without commit metadata prints the package version.
 
 ## Observability & Tracing
 

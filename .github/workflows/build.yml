@@ -39,6 +39,13 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             feature-set: default
+            image_arch: amd64
+
+          - build: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            feature-set: default
+            image_arch: arm64
 
           - build: linux-telemetry
             os: ubuntu-latest
@@ -71,13 +78,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Get package name from Cargo.toml
+      - name: Read Cargo package information
         id: package
-        shell: bash
-        run: |
-          PACKAGE_NAME=$(awk -F '"' '/^name = / {print $2; exit}' Cargo.toml)
-          echo "name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
-          echo "Package name: $PACKAGE_NAME"
+        uses: ./.github/actions/crate-info
 
       - name: Install Rust
         uses: ./.github/actions/rust-toolchain
@@ -95,6 +98,18 @@ jobs:
       - name: Build (telemetry)
         if: matrix.feature-set == 'telemetry'
         run: cargo build --release --locked --target ${{ matrix.target }} --features telemetry
+
+      - name: Build and test the runtime image
+        if: matrix.image_arch != ''
+        env:
+          ARCH: ${{ matrix.image_arch }}
+          TARGET: ${{ matrix.target }}
+          PACKAGE: ${{ steps.package.outputs.name }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash .github/container/build-native.sh "$ARCH" "target/$TARGET/release/$PACKAGE" "$PACKAGE:ci"
+          bash .github/container/smoke-test.sh "$PACKAGE:ci" "$VERSION"
 
       # Packaging is checked here too, so a broken RPM/DEB definition fails CI on
       # develop instead of the release.

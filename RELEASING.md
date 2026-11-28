@@ -58,7 +58,7 @@ GitHub.com repository.
 flowchart TD
     S["Prepare the candidate on sandbox<br/>Check, bump, update dependencies, and check again<br/>Push the signed commit and wait for CI OK"]
     D["Qualify the same SHA on develop<br/>Fast-forward develop and wait for CI OK"]
-    R["Publish with just release<br/>Build and verify the draft<br/>Publish the release, creating the tag at that SHA<br/>Publish or verify the crate"]
+    R["Publish with just release<br/>Build and verify the draft<br/>Publish the release, creating the tag at that SHA<br/>Publish or verify the crate and image"]
     M["Promote the released SHA to main<br/>Recheck develop CI and fast-forward main"]
     S --> D --> R --> M
 ```
@@ -72,9 +72,13 @@ packages, and crate using one resolved Rust version. It checks the file set,
 writes `SHA256SUMS`, and attests the build. Before publishing the draft it
 checks the uploaded asset digests, the latest stable tag, and the crates.io
 checksum if the version already exists there. It verifies the public tag and
-downloaded files, then publishes or verifies the crate on crates.io.
+downloaded files, then publishes or verifies the crate on crates.io and the
+multi-architecture image on GHCR. The image uses the static binaries from the
+release archives. The workflow verifies both variants and attests the image
+index before assigning the version tag. An existing version tag is verified
+against the release binaries on retry.
 
-![Release sequence showing the SHA-pinned dispatch, tag and crate publication, and final push to main](.github/diagrams/releasing/sequence.svg)
+![Release sequence showing the SHA-pinned dispatch, artifact publication, and final push to main](.github/diagrams/releasing/sequence.svg)
 
 [D2 source](.github/diagrams/releasing/sequence.d2)
 
@@ -98,7 +102,7 @@ sequenceDiagram
     R->>W: Follow the returned run ID
     W->>W: Guard, build, and verify draft
     W->>W: Publish release and tag
-    W->>W: Verify assets and finish crates.io
+    W->>W: Verify assets and publish or verify crate and image
     W-->>R: Release succeeded
     R->>C: Require CI OK again
     C-->>R: CI OK passed
@@ -145,15 +149,15 @@ flowchart TD
 - **The failure can be fixed on the same commit.** For a transient failure or
   a publishing settings fix, choose **Re-run failed jobs** on the original
   Release run. The retry uses the same SHA. It can replace its own incomplete
-  draft before tagging or verify the published files and crate after tagging.
+  draft before tagging or finish verifying and publishing after tagging.
 - **The CLI exited or the push to `main` failed.** Check Actions for the
   original run before dispatching again. If the run succeeded, including after
   a retry, verify that its SHA matches the published tag and that `develop`'s
   **CI OK** passed for that SHA. Then run
   `git push origin <released-sha>:refs/heads/main`.
-- **CI fails after `main` advances.** The GitHub release and crates.io package
-  are already public and remain available at the released version. Rerun failed
-  jobs for a transient failure. Ship any source fix in the next version.
+- **CI fails after `main` advances.** The GitHub release, crates.io package,
+  and GHCR image remain available at the released version. Rerun failed jobs
+  for a transient failure. Ship any source fix in the next version.
 
 ### Fix the source and release again
 
@@ -184,6 +188,16 @@ gh attestation verify "$asset" --repo "$repo" \
 ```
 
 The release notes record the source SHA and the resolved Rust version.
+
+To verify a container image, use the pinned OCI reference from the Release
+run's summary.
+
+```sh
+repo=OWNER/REPO
+image=ghcr.io/owner/repo
+gh attestation verify "oci://$image@sha256:<index-digest>" --repo "$repo" \
+  --signer-workflow "$repo/.github/workflows/release.yml"
+```
 
 ## Adopting this flow in another project
 
@@ -245,3 +259,7 @@ example, from the diagram directory run
   `release.yml` on the existing crate. Keep that workflow filename stable.
   For a new crate, follow the registry's [first-publish instructions](https://crates.io/docs/trusted-publishing)
   before configuring the trusted publisher.
+- **GHCR.** The image job publishes with the repository's `GITHUB_TOKEN`.
+  Review the package's visibility after its first release. New packages are
+  private by default. Set visibility for your consumers or grant the cluster
+  pull access. See [Container registry permissions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).

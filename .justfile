@@ -55,6 +55,23 @@ build-musl:
   @echo "🔨 Building with musl..."
   cargo build --release --target x86_64-unknown-linux-musl
 
+# Build and smoke-test the scratch image for this Linux host
+image:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname -s):$(uname -m)" in
+        Linux:x86_64) arch=amd64; target=x86_64-unknown-linux-musl ;;
+        Linux:aarch64) arch=arm64; target=aarch64-unknown-linux-musl ;;
+        *) echo "Use a Linux amd64 or arm64 host to build the native image." >&2; exit 1 ;;
+    esac
+    export CONTAINER_ENGINE="${CONTAINER_ENGINE:-podman}"
+    cargo build --release --locked --target "$target"
+    metadata="$(cargo metadata --no-deps --format-version 1 --locked)"
+    target_dir="$(jq -er '.target_directory' <<<"$metadata")"
+    version="$(jq -er '.packages[0].version' <<<"$metadata")"
+    bash .github/container/build-native.sh "$arch" "$target_dir/$target/release/cron-when" cron-when:local
+    bash .github/container/smoke-test.sh cron-when:local "$version"
+
 # Update dependencies
 update:
   @echo "⬆️  Updating dependencies..."

@@ -17,13 +17,9 @@ pub fn new() -> Command {
         .literal(AnsiColor::Blue.on_default() | Effects::BOLD)
         .placeholder(AnsiColor::Green.on_default());
 
-    let git_hash = built_info::GIT_COMMIT_HASH.unwrap_or("unknown");
-    let long_version: &'static str =
-        Box::leak(format!("{} - {}", env!("CARGO_PKG_VERSION"), git_hash).into_boxed_str());
-
     Command::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
-        .long_version(long_version)
+        .long_version(env!("CRON_WHEN_LONG_VERSION"))
         .author(env!("CARGO_PKG_AUTHORS"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .long_about(
@@ -171,6 +167,23 @@ mod tests {
     fn test_cli_structure() {
         let cmd = new();
         assert_eq!(cmd.get_name(), env!("CARGO_PKG_NAME"));
+    }
+
+    #[test]
+    fn test_version_flags() -> Result<(), &'static str> {
+        for (flag, expected) in [
+            ("-V", env!("CARGO_PKG_VERSION")),
+            ("--version", env!("CRON_WHEN_LONG_VERSION")),
+        ] {
+            let name = env!("CARGO_PKG_NAME");
+            let output = new()
+                .try_get_matches_from([name, flag])
+                .err()
+                .ok_or("version flag should exit after printing")?;
+            assert_eq!(output.kind(), clap::error::ErrorKind::DisplayVersion);
+            assert_eq!(output.to_string(), format!("{name} {expected}\n"));
+        }
+        Ok(())
     }
 
     #[test]

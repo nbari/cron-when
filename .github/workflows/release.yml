@@ -299,6 +299,61 @@ jobs:
         id: publish
         run: bash .github/scripts/github-release.sh
 
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [guard, release]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      PACKAGE: ${{ needs.guard.outputs.package }}
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the Linux release archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: dist-*-unknown-linux-musl
+          merge-multiple: true
+          path: dist
+
+      - name: Log in to GitHub Container Registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Stage and verify the image
+        id: stage
+        run: bash .github/container/stage-release.sh
+
+      - name: Attest the image index
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-name: ${{ steps.stage.outputs.image }}
+          subject-digest: ${{ steps.stage.outputs.digest }}
+          push-to-registry: true
+
+      - name: Publish or verify the version tag
+        env:
+          IMAGE: ${{ steps.stage.outputs.image }}
+          DIGEST: ${{ steps.stage.outputs.digest }}
+          PUBLISH: ${{ steps.stage.outputs.publish }}
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISH" == true ]]; then
+            docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST"
+          fi
+          actual="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -er .digest)"
+          [[ "$actual" == "$DIGEST" ]] || { echo "::error::$IMAGE:$VERSION points to $actual, expected $DIGEST."; exit 1; }
+          printf "Image \`%s:%s\`\n\nPinned reference \`%s@%s\`\n" "$IMAGE" "$VERSION" "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
