@@ -31,7 +31,8 @@ values to adapt by hand are listed below and, for the release flow, in
 - **SECURITY.md** - Vulnerability reporting and supported-version policy (replace its
   contact and response times with your own)
 
-Outside this directory, the release flow only needs the `release` recipe in `.justfile`.
+The operator runs `just release` from `.justfile`. The bump recipes are imported
+from `.justfiles/release.just` and the GitHub helpers live under `.github/scripts`.
 
 ## How to Use as Template
 
@@ -42,6 +43,7 @@ cp -r .github /path/to/new-project/
 cp -r .devcontainer /path/to/new-project/
 cp -r scripts /path/to/new-project/   # the integration-test helpers
 cp .justfile deny.toml RELEASING.md /path/to/new-project/
+cp -r .justfiles /path/to/new-project/
 cp .sops.yaml.example /path/to/new-project/
 ```
 
@@ -188,13 +190,11 @@ name = "your-package-name"  # ← This is used
 
 ### Releases
 
-Releases never start from a tag you push. The operator bumps the version as the last
-commit of the work, fast-forwards `develop` to it once Test & Build is green, and runs
-`just release`. The **release.yml** run checks that `CI OK` passed on that commit, builds
-it once (every archive, the Linux packages and the crate), publishes the GitHub release,
-which creates the `X.Y.Z` tag, and then the crate; `just release` finally fast-forwards
-`main`. Nothing is published before every build has succeeded. The complete description,
-with diagrams and recovery, is in [RELEASING.md](../RELEASING.md).
+Prepare a signed bump on `sandbox` and fast-forward `develop` to the same SHA
+after `CI OK`. Once `develop` has passed its own gate, run `just release`. The
+Release workflow builds and verifies the files, publishes the GitHub release
+and crate, then the recipe fast-forwards `main`. See
+[RELEASING.md](../RELEASING.md) for the commands and recovery.
 
 ## Security Auditing
 
@@ -370,11 +370,10 @@ want coverage at all, remove the `coverage` job from `build.yml`.
 
 ### A release does not publish
 
-Open the run that `just release` started: the first job, the guard, explains any refusal
-in its log (the version already tagged or below the latest release, `develop` not
-containing `main`, or no successful `CI OK` check on the commit). A failed crates.io
-upload usually means Trusted Publishing is not configured for `release.yml` on the
-crate's settings page; fix it and re-run the failed job.
+Check the `develop` CI gate for the SHA printed by `just release`. If Release
+started, its guard reports version, SHA, ancestry, and CI refusals. A crates.io
+failure can also leave a public GitHub release. Inspect the failure and rerun
+failed jobs on the original run.
 [RELEASING.md](../RELEASING.md#when-something-fails) lists what to do for every failure.
 
 ## License

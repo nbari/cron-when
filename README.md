@@ -545,16 +545,9 @@ cargo run -- "*/5 * * * *"
 
 ### Releasing
 
-A release is one command, and it never needs a tag deleted or moved. Work lands on
-`sandbox` with the version bump as its last commit; when CI is green there, fast-forward
-`develop` to that commit and run `just release`. The Release workflow builds that exact
-commit once, publishes the GitHub release (which creates the tag) and the crate;
-`just release` then fast-forwards `main`. Nothing is published before every build has succeeded.
+Run `just bump`, `just bump-minor`, or `just bump-major` on `sandbox` to prepare
+a signed candidate. After `CI OK` on `sandbox`, fast-forward `develop` to that SHA
+and wait for its own `CI OK`. Run `just release` when ready to publish. It follows
+the exact Release run and fast-forwards `main` after publication succeeds.
 
-| Command | What it does |
-|---|---|
-| `just release` | Start the Release workflow on `develop` and follow the run |
-
-[RELEASING.md](RELEASING.md) explains how it works, what to do when something fails,
-what it guarantees, how to verify a download, and how to adopt the flow in another
-project.
+See [RELEASING.md](RELEASING.md) for the commands, recovery, and template setup.
