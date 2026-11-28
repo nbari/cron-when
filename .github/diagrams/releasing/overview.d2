@@ -1,0 +1,26 @@
+direction: down
+
+classes: {
+  step: {
+    style.border-radius: 8
+  }
+  checkpoint: {
+    style.border-radius: 8
+    style.stroke-width: 3
+  }
+}
+
+sandbox: "Prepare the candidate on sandbox\nCheck, bump, update dependencies, and check again\nPush the signed commit and wait for CI OK" {
+  class: checkpoint
+}
+develop: "Qualify the same SHA on develop\nFast-forward develop and wait for CI OK" {
+  class: checkpoint
+}
+release: "Publish with just release\nBuild and verify the draft\nPublish the release, creating the tag at that SHA\nPublish or verify the crate" {
+  class: step
+}
+main: "Promote the released SHA to main\nRecheck develop CI and fast-forward main" {
+  class: step
+}
+
+sandbox -> develop -> release -> main

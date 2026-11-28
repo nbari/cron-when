@@ -1,0 +1,30 @@
+shape: sequence_diagram
+
+operator: Operator
+recipe: just release
+ci: develop CI
+workflow: Release workflow
+main: main
+
+operator -> recipe: Run when ready to publish
+recipe -> recipe: Capture remote develop SHA
+recipe -> ci: Require CI OK for that SHA
+ci -> recipe: CI OK passed {
+  style.stroke-dash: 5
+}
+recipe -> workflow: Dispatch with expected SHA
+workflow -> recipe: Return run ID {
+  style.stroke-dash: 5
+}
+recipe -> workflow: Follow the returned run ID
+workflow -> workflow: Guard, build, and verify draft
+workflow -> workflow: Publish release and tag
+workflow -> workflow: Verify assets and finish crates.io
+workflow -> recipe: Release succeeded {
+  style.stroke-dash: 5
+}
+recipe -> ci: Require CI OK again
+ci -> recipe: CI OK passed {
+  style.stroke-dash: 5
+}
+recipe -> main: Fast-forward to released SHA

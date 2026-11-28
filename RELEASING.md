@@ -22,9 +22,13 @@ GitHub.com repository.
    git push origin "$candidate:refs/heads/sandbox"
    ```
 
-   The bump runs `just test` (Clippy, formatting checks, and unit tests), changes
-   the version and refreshes the lockfile with `cargo update`, then runs the same
-   checks on the candidate. It creates a signed local commit.
+   The bump first runs `just test` (Clippy, formatting checks, and unit tests)
+   to verify the starting checkout. `cargo set-version` advances the release
+   version, which the recipe checks against the existing tags. `cargo update`
+   then resolves dependencies within the manifest's constraints and refreshes
+   `Cargo.lock`. A second `just test` checks the updated candidate before the
+   recipe commits the version files in one signed local commit. CI tests that
+   same dependency snapshot.
 
 2. Wait for Test & Build's **CI OK** on that `sandbox` SHA. Fast-forward
    `develop` to it.
@@ -43,12 +47,65 @@ GitHub.com repository.
    independently. After the Release run succeeds, the recipe checks the gate
    again and fast-forwards `main` to the released SHA.
 
+![Release overview from a signed sandbox candidate to the tested SHA on main](.github/diagrams/releasing/overview.svg)
+
+[D2 source](.github/diagrams/releasing/overview.d2)
+
+<details>
+<summary>Mermaid version</summary>
+
+```mermaid
+flowchart TD
+    S["Prepare the candidate on sandbox<br/>Check, bump, update dependencies, and check again<br/>Push the signed commit and wait for CI OK"]
+    D["Qualify the same SHA on develop<br/>Fast-forward develop and wait for CI OK"]
+    R["Publish with just release<br/>Build and verify the draft<br/>Publish the release, creating the tag at that SHA<br/>Publish or verify the crate"]
+    M["Promote the released SHA to main<br/>Recheck develop CI and fast-forward main"]
+    S --> D --> R --> M
+```
+
+</details>
+
+### What `just release` does
+
 The [Release workflow](.github/workflows/release.yml) builds the archives, Linux
 packages, and crate using one resolved Rust version. It checks the file set,
 writes `SHA256SUMS`, and attests the build. Before publishing the draft it
 checks the uploaded asset digests, the latest stable tag, and the crates.io
 checksum if the version already exists there. It verifies the public tag and
 downloaded files, then publishes or verifies the crate on crates.io.
+
+![Release sequence showing the SHA-pinned dispatch, tag and crate publication, and final push to main](.github/diagrams/releasing/sequence.svg)
+
+[D2 source](.github/diagrams/releasing/sequence.d2)
+
+<details>
+<summary>Mermaid version</summary>
+
+```mermaid
+sequenceDiagram
+    actor O as Operator
+    participant R as just release
+    participant C as develop CI
+    participant W as Release workflow
+    participant M as main
+
+    O->>R: Run when ready to publish
+    R->>R: Capture remote develop SHA
+    R->>C: Require CI OK for that SHA
+    C-->>R: CI OK passed
+    R->>W: Dispatch with expected SHA
+    W-->>R: Return run ID
+    R->>W: Follow the returned run ID
+    W->>W: Guard, build, and verify draft
+    W->>W: Publish release and tag
+    W->>W: Verify assets and finish crates.io
+    W-->>R: Release succeeded
+    R->>C: Require CI OK again
+    C-->>R: CI OK passed
+    R->>M: Fast-forward to released SHA
+```
+
+</details>
 
 After the first stable tag, each new release must be the next patch, minor, or
 major version above the highest stable tag. For example, after `0.22.4` the
@@ -57,6 +114,26 @@ requires `0.22.5` to be tagged first. Both the bump recipe and the workflow
 enforce this sequence.
 
 ## When something fails
+
+![Recovery paths for a CI refusal, a release job failure, or an interrupted push to main](.github/diagrams/releasing/recovery.svg)
+
+[D2 source](.github/diagrams/releasing/recovery.d2)
+
+<details>
+<summary>Mermaid version</summary>
+
+```mermaid
+flowchart TD
+    F{"Where did it stop?"}
+    F -->|CI or guard| C["Inspect CI or the guard<br/>for the candidate SHA"]
+    F -->|Release job| T{"Tag created?"}
+    F -->|main push| V["Verify Release success,<br/>tag SHA, and develop CI"]
+    T -->|Before tag| B["Rerun failed jobs<br/>Source fix: fresh candidate"]
+    T -->|After tag| A["Rerun failed jobs<br/>Source fix: next version"]
+    V --> M["Fast-forward main<br/>to the released SHA"]
+```
+
+</details>
 
 - **CI or guard refused the release.** Check the workflow link and the SHA.
   Rerun failed CI jobs on the same push run for a transient failure. A source
@@ -79,12 +156,15 @@ enforce this sequence.
 
 ## Verify a download
 
-Download the asset and `SHA256SUMS` from the release, then run the following.
+Download the asset and `SHA256SUMS` from the release. Substitute your GitHub
+repository and the downloaded asset's path in the commands below.
 
 ```sh
+repo=OWNER/REPO
+asset=path/to/downloaded-asset
 sha256sum --check --ignore-missing SHA256SUMS
-gh attestation verify <asset> --repo nbari/cron-when \
-  --signer-workflow nbari/cron-when/.github/workflows/release.yml
+gh attestation verify "$asset" --repo "$repo" \
+  --signer-workflow "$repo/.github/workflows/release.yml"
 ```
 
 The release notes record the source SHA and the resolved Rust version.
@@ -116,28 +196,20 @@ default. To deliberately bump on `develop` in another project, export
 
 For generated version metadata, export `RELEASE_BUMP_FILES` as a newline-separated
 list of tracked files relative to the Cargo workspace. Define a
-`_release-bump-metadata version` recipe that updates those files. A Permesi
-hook can run its existing generator.
+`_release-bump-metadata version` recipe that updates those files. This example
+writes the version to a tracked `docs/version.txt`.
 
 ```just
-export RELEASE_BUMP_FILES := "docs/openapi/permesi.json\ndocs/openapi/genesis.json"
+export RELEASE_BUMP_FILES := "docs/version.txt"
 
 _release-bump-metadata version:
-    @just openapi
+    @printf '%s\n' {{quote(version)}} > docs/version.txt
 ```
 
-- [s3m](https://github.com/s3m/s3m/blob/develop/.github/RELEASING.md) shares a
-  version across two crates, updates the internal dependency requirement,
-  and publishes the dependency first.
-- [Permesi](https://github.com/permesi/permesi/blob/develop/CONTRIBUTING.md#releasing)
-  regenerates OpenAPI specs from the workspace and qualifies image digests
-  against the Helm charts before production delivery.
-- [pg_exporter](https://github.com/nbari/pg_exporter/blob/develop/RELEASING.md)
-  includes its Grafana dashboard version in the bump and verifies the
-  crates.io checksum.
-- [Textarea](https://github.com/wurzellos/textarea/blob/develop/RELEASING.md)
-  bumps the backend on `develop` and promotes frontend-only changes without
-  a Rust bump.
+Copy the [diagram assets](.github/diagrams/releasing) with this guide. When editing
+a diagram, update both versions and render its SVG from the D2 source. For
+example, from the diagram directory run
+`d2 --layout dagre --theme 0 --dark-theme 200 --pad 24 --scale 1 overview.d2 overview.svg`.
 
 ## Settings
 

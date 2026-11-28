@@ -1,0 +1,39 @@
+direction: down
+
+classes: {
+  question: {
+    shape: diamond
+  }
+  step: {
+    style.border-radius: 8
+  }
+}
+
+failure: Where did it stop? {
+  class: question
+}
+ci: "Inspect CI or the guard\nfor the candidate SHA" {
+  class: step
+}
+tag: Tag created? {
+  class: question
+}
+before: "Rerun failed jobs\nSource fix: fresh candidate" {
+  class: step
+}
+after: "Rerun failed jobs\nSource fix: next version" {
+  class: step
+}
+verify: "Verify Release success,\ntag SHA, and develop CI" {
+  class: step
+}
+push: "Fast-forward main\nto the released SHA" {
+  class: step
+}
+
+failure -> ci: CI or guard
+failure -> tag: Release job
+failure -> verify: main push
+tag -> before: Before tag
+tag -> after: After tag
+verify -> push
