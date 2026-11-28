@@ -15,13 +15,22 @@ failure: Where did it stop? {
 ci: "Inspect CI or the guard\nfor the candidate SHA" {
   class: step
 }
-tag: Tag created? {
+new_commit: Need a new commit? {
   class: question
 }
-before: "Rerun failed jobs\nSource fix: fresh candidate" {
+retry: "Fix the cause and rerun\nfailed jobs on the original run" {
   class: step
 }
-after: "Rerun failed jobs\nSource fix: next version" {
+tag: Version tagged? {
+  class: question
+}
+keep: "Fix on sandbox\nKeep the version if still eligible" {
+  class: step
+}
+bump: "Fix on sandbox\nBump as the last commit" {
+  class: step
+}
+qualify: "Push the candidate and wait for sandbox CI OK\nFast-forward develop to that SHA and push\nWait for develop CI OK and run just release" {
   class: step
 }
 verify: "Verify Release success,\ntag SHA, and develop CI" {
@@ -32,8 +41,12 @@ push: "Fast-forward main\nto the released SHA" {
 }
 
 failure -> ci: CI or guard
-failure -> tag: Release job
-failure -> verify: main push
-tag -> before: Before tag
-tag -> after: After tag
+failure -> new_commit: Release job
+failure -> verify: Release succeeded
+new_commit -> retry: No
+new_commit -> tag: Yes
+tag -> keep: Untagged
+tag -> bump: Tagged
+keep -> qualify
+bump -> qualify
 verify -> push

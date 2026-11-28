@@ -11,7 +11,7 @@ Authenticate `gh` for the release repository and configure a Git signing key
 that GitHub recognizes. The `origin` fetch and push URLs must identify that same
 GitHub.com repository.
 
-1. Make the bump the last commit on `sandbox`.
+1. Make the bump the last commit on `sandbox` when preparing a new version.
 
    ```sh
    git switch sandbox
@@ -126,10 +126,14 @@ enforce this sequence.
 flowchart TD
     F{"Where did it stop?"}
     F -->|CI or guard| C["Inspect CI or the guard<br/>for the candidate SHA"]
-    F -->|Release job| T{"Tag created?"}
-    F -->|main push| V["Verify Release success,<br/>tag SHA, and develop CI"]
-    T -->|Before tag| B["Rerun failed jobs<br/>Source fix: fresh candidate"]
-    T -->|After tag| A["Rerun failed jobs<br/>Source fix: next version"]
+    F -->|Release job| N{"Need a new commit?"}
+    F -->|Release succeeded| V["Verify Release success,<br/>tag SHA, and develop CI"]
+    N -->|No| R["Fix the cause and rerun<br/>failed jobs on the original run"]
+    N -->|Yes| T{"Version tagged?"}
+    T -->|Untagged| K["Fix on sandbox<br/>Keep the version if still eligible"]
+    T -->|Tagged| B["Fix on sandbox<br/>Bump as the last commit"]
+    K --> Q["Push the candidate and wait for sandbox CI OK<br/>Fast-forward develop to that SHA and push<br/>Wait for develop CI OK and run just release"]
+    B --> Q
     V --> M["Fast-forward main<br/>to the released SHA"]
 ```
 
@@ -138,21 +142,33 @@ flowchart TD
 - **CI or guard refused the release.** Check the workflow link and the SHA.
   Rerun failed CI jobs on the same push run for a transient failure. A source
   fix goes through `sandbox` and a fresh CI run.
-- **Release failed before tagging.** Fix the cause and choose **Re-run failed
-  jobs** on the original run. A run can replace its own incomplete draft.
-  Inspect a draft owned by another run before removing it. If a newer version
-  has already shipped, prepare the next version from the highest stable tag.
-  For a crates.io checksum conflict, reconcile the package or choose another
-  allowed bump from the highest stable tag.
-- **Release failed after tagging.** The GitHub release is public. For a
-  transient failure, rerun the failed jobs on the original run. A crates.io
-  retry verifies any existing package against the built checksum. A source
-  fix goes into the next version. Keep existing release tags in place.
-- **The CLI was interrupted or the push to `main` failed.** Find the original
-  run and confirm that its SHA matches the published tag, that the Release run
-  succeeded, and that `develop`'s **CI OK** passed for that SHA. Then run
-  `git push origin <released-sha>:refs/heads/main`. If the dispatch response
-  was lost, check Actions for the run before retrying.
+- **The failure can be fixed on the same commit.** For a transient failure or
+  a publishing settings fix, choose **Re-run failed jobs** on the original
+  Release run. The retry uses the same SHA. It can replace its own incomplete
+  draft before tagging or verify the published files and crate after tagging.
+- **The CLI exited or the push to `main` failed.** Check Actions for the
+  original run before dispatching again. If the run succeeded, including after
+  a retry, verify that its SHA matches the published tag and that `develop`'s
+  **CI OK** passed for that SHA. Then run
+  `git push origin <released-sha>:refs/heads/main`.
+- **CI fails after `main` advances.** The GitHub release and crates.io package
+  are already public and remain available at the released version. Rerun failed
+  jobs for a transient failure. Ship any source fix in the next version.
+
+### Fix the source and release again
+
+1. Switch to `sandbox`, make the fix, run `just test`, and make a signed commit.
+2. Keep the existing bump if that version is still untagged and eligible. If
+   the version has a release tag, make the next bump the last commit on
+   `sandbox`. A newer tag or unresolved crates.io checksum conflict can also
+   require a different allowed version. Keep published tags in place.
+3. Push `sandbox` and wait for **CI OK**. Fast-forward `develop` to that exact
+   SHA and push it. Wait for `develop`'s own **CI OK**, then run `just release`
+   when ready to publish.
+
+If an earlier run left an incomplete draft for the same version, it belongs to
+that run. Before starting a new run, confirm the earlier run has stopped and
+remove its draft once you have verified that it is unpublished.
 
 ## Verify a download
 
